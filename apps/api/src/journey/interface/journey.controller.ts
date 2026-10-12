@@ -184,6 +184,7 @@ export function mapAlternative(journey: JourneyAlternative) {
       trip_id: leg.tripId,
       service_date: leg.serviceDate,
       timing_precision: leg.timingPrecision,
+      geometry: leg.geometry ?? null,
       evidence_type: leg.mode === 'WALK' ? 'ESTIMATED' : 'SCHEDULED',
       entity_bindings: leg.entityBindings.map((binding) => ({
         otp_entity_id: binding.otpEntityId,

@@ -14,7 +14,7 @@ This repository is a sanitized product-publication lineage. It is **not** the or
 
 ## Current milestone
 
-M2 complete; M3 (interactive map) is next.
+M2 complete. M3 is in progress and NOT VERIFIED; M4 remains NOT_RUN.
 
 ## Verified capabilities
 
@@ -41,6 +41,9 @@ M2 complete; M3 (interactive map) is next.
 - `pnpm --filter @transum-in/web test` (smoke via web proxy): PASS — real OTP plan, activation, progress immutability.
 - `pnpm --filter @transum-in/web test:browser:e2e` (Playwright/Chrome, two independent browser contexts, real OTP + DB): PASS — targeted alert isolation (1 affected / 0 unrelated), recovery `COMPLETED` with blocked-entity avoidance, SSE reconnect; screenshots in ignored `data/processed/product-p1r-browser/`.
 - `pnpm typecheck`, `pnpm lint`, `pnpm openapi:validate`, `pnpm api:types:check`: PASS.
+- M3 leg-geometry contract (partial): `JourneySegment.geometry` nullable GeoJSON `LineString` (`docs/api/openapi-v1.yaml`), populated from OTP `legGeometry` encoded polyline; `pnpm --filter @transum-in/api test` PASS 85/85 including decoder round-trip, null-when-absent, and truncated-input rejection; `active-journey.controller.ts` re-validates stored geometry on read.
+- M3 static map render (prototype, browser-verified via desktop review pane): `/` journey detail renders OSM slippy tiles, per-segment mode-coloured polylines (dashed walk), Origin/Boarding/Alighting/Transfer/Destination markers, `© OpenStreetMap contributors` + provider attribution; route follows real geometry rather than a straight line. Interactive pan/zoom and MapLibre conformance remain incomplete, so M3 is NOT VERIFIED.
+- Restored tracked test fixture `data/fixtures/petabencana/recorded-flood-area-minimized.json` (`RECORDED_MINIMIZED_NOT_LIVE` sample) required by `operational-data.spec.ts`; it was excluded from the earlier publication filter, which silently broke one API test.
 - OTP runtime re-provisioned from accepted local artifacts: graph `ad9fdd3e…331574`, JAR `8acd2808…a7990`, JRE `5b02bcc9…37e1b`; OTP 2.10.0 health PASS on `127.0.0.1:8080`.
 - Protected volumes (`transum-in-nexus-postgres-data`, `transumin-foundation_transumin_postgres_data`) untouched; product uses new volume `transum-in-nexus-product-postgres-data` on port 5435.
 - A locally generated product DB credential was accidentally printed in one agent transcript; it was rotated immediately via `ALTER ROLE` and never committed. `.env` is ignored with mode 0600.
@@ -50,16 +53,18 @@ M2 complete; M3 (interactive map) is next.
 - M0: PASS (remote verified).
 - M1: PASS (real API + isolated DB + OTP + browser smoke).
 - M2 (generalized planning): PASS (`pnpm acceptance:v1:multi-od`; place-search-resolved named corridors plus one approximate-coordinate destination; preference-ranking invariants verified; evidence JSON in ignored `data/processed/acceptance/`).
-- M3–M7: NOT_RUN.
-- V01–V20 and S01–S14: retain statuses in `PROTOTYPE-V1-CAPABILITY-AND-COVERAGE.md`; no new PASS claimed.
+- M3 (interactive map): NOT VERIFIED — real OTP geometry, static slippy tiles, markers, attribution, and textual itinerary render in browser; required MapLibre GL interaction (pan/zoom), full textual-equivalence audit, and geometry-aware browser acceptance remain incomplete.
+- M4–M7: NOT_RUN.
+- V01–V20 and S01–S14: retain statuses in `PROTOTYPE-V1-CAPABILITY-AND-COVERAGE.md`; V04 is NOT VERIFIED, V15 remains BLOCKED pending Phase 4A-R walking-shape validation.
 
 ## Known gaps
 
-- Route geometry API/map, GPS consent flow, explicit boarding/alighting confirmation UI, and passenger-report submission boundary are not yet implemented.
+- GPS consent/OS-cached position, explicit boarding/alighting confirmation UI, and passenger-report submission boundary are not yet implemented.
+- Map prototype is static slippy-tile + SVG overlay, not MapLibre GL; pan/zoom, MapLibre conformance, interaction tests, and geometry-aware browser acceptance are pending. M3 is not accepted.
 - POI search beyond stops/stations remains blocked pending approved source/version/license/attribution and ingest scope.
 - Spatial `validate`/`ingest` require ~8 GiB Node heap for the OPL walking-graph build.
 - Local DB credential rotation history above is recorded for security traceability.
 
 ## Next action
 
-Implement M3 interactive geographic map (origin/destination markers, leg geometry via OTP leg polyline/steps, boarding/alighting and transfer markers, provider attribution) with geometry-level browser validation.
+Implement MapLibre GL interactive map on verified leg-geometry contract (pan/zoom, textual-equivalence audit, geometry-aware browser acceptance), then re-verify M3 with reproducible browser evidence.

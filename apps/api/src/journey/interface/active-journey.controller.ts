@@ -302,11 +302,47 @@ function parseLeg(value: Record<string, unknown>): JourneyLeg {
       'SOURCE_GTFS_WITH_FREQUENCIES',
       'ESTIMATED',
     ] as const),
+    geometry: parseGeometry(value.geometry),
     entityBindings: bindings,
     operationalFlags: array(value.operational_flags, 'operational_flags').map(
       (flag) => parseOperationalFlag(record(flag, 'operational_flag')),
     ),
   };
+}
+
+function parseGeometry(value: unknown): JourneyLeg['geometry'] {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object')
+    throw new BadRequestException(
+      'segment geometry must be null or an object.',
+    );
+  const geometry = value as Record<string, unknown>;
+  if (geometry.type !== 'LineString' || !Array.isArray(geometry.coordinates))
+    throw new BadRequestException(
+      'segment geometry must be a GeoJSON LineString.',
+    );
+  const coordinates = geometry.coordinates.map((coordinate) => {
+    if (
+      !Array.isArray(coordinate) ||
+      coordinate.length !== 2 ||
+      !Number.isFinite(coordinate[0]) ||
+      !Number.isFinite(coordinate[1])
+    )
+      throw new BadRequestException(
+        'segment geometry coordinates must be [longitude, latitude] pairs.',
+      );
+    const [longitude, latitude] = coordinate as [number, number];
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180)
+      throw new BadRequestException(
+        'segment geometry coordinates are out of range.',
+      );
+    return [longitude, latitude] as const;
+  });
+  if (coordinates.length < 2)
+    throw new BadRequestException(
+      'segment geometry must contain at least two points.',
+    );
+  return { type: 'LineString' as const, coordinates };
 }
 
 function parseBinding(

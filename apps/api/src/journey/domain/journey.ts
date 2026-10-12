@@ -14,6 +14,11 @@ export type GeoPoint = Readonly<{
   longitude: number;
 }>;
 
+export type JourneyGeometry = Readonly<{
+  type: 'LineString';
+  coordinates: readonly (readonly [number, number])[];
+}>;
+
 export type JourneyPlanRequest = Readonly<{
   origin: GeoPoint;
   destination: GeoPoint;
@@ -83,6 +88,7 @@ export type JourneyLeg = Readonly<{
   tripId: string | null;
   serviceDate: string | null;
   timingPrecision: JourneyTimingPrecision;
+  geometry?: JourneyGeometry | null;
   entityBindings: readonly CanonicalEntityBinding[];
   operationalFlags: readonly JourneyOperationalFlag[];
 }>;

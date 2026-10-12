@@ -61,6 +61,7 @@ type OtpLeg = Readonly<{
   route: { gtfsId: string; shortName: string | null } | null;
   trip: { gtfsId: string } | null;
   intermediateStops: readonly OtpStop[] | null;
+  legGeometry: { points: string | null } | null;
   start: { scheduledTime: string };
   end: { scheduledTime: string };
 }>;
@@ -121,6 +122,7 @@ query ProductJourneyPlan(
           route { gtfsId shortName }
           trip { gtfsId }
           intermediateStops { gtfsId name lat lon }
+          legGeometry { points }
           start { scheduledTime }
           end { scheduledTime }
         }
@@ -361,9 +363,41 @@ export function normalizeLeg(leg: OtpLeg, sequence: number): JourneyLeg {
     tripId: leg.trip?.gtfsId ?? null,
     serviceDate: leg.serviceDate,
     timingPrecision: timingPrecision(mode),
+    geometry: decodeLegGeometry(leg.legGeometry?.points ?? null),
     entityBindings: [],
     operationalFlags: [],
   };
+}
+
+function decodeLegGeometry(encoded: string | null): JourneyLeg['geometry'] {
+  if (!encoded || encoded.length > 120_000) return null;
+  const coordinates: Array<[number, number]> = [];
+  let index = 0;
+  let latitude = 0;
+  let longitude = 0;
+  function delta(): number | null {
+    let value = 0;
+    for (let shift = 0; shift <= 25; shift += 5) {
+      if (index >= encoded!.length) return null;
+      const byte = encoded!.charCodeAt(index++) - 63;
+      if (byte < 0 || byte > 63) return null;
+      value += (byte & 31) * 2 ** shift;
+      if (byte < 32) return value % 2 === 1 ? -(value + 1) / 2 : value / 2;
+    }
+    return null;
+  }
+  while (index < encoded.length) {
+    if (coordinates.length >= 10_000) return null;
+    const latitudeDelta = delta();
+    const longitudeDelta = delta();
+    if (latitudeDelta === null || longitudeDelta === null) return null;
+    latitude += latitudeDelta;
+    longitude += longitudeDelta;
+    if (Math.abs(latitude) > 9_000_000 || Math.abs(longitude) > 18_000_000)
+      return null;
+    coordinates.push([longitude / 1e5, latitude / 1e5]);
+  }
+  return coordinates.length >= 2 ? { type: 'LineString', coordinates } : null;
 }
 
 export function parseNamespacedId(value: string): Readonly<{

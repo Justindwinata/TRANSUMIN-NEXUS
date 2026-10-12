@@ -681,10 +681,17 @@ components:
         otp_stop_id: {type: [string, 'null']}
         latitude: {type: [number, 'null'], minimum: -90, maximum: 90}
         longitude: {type: [number, 'null'], minimum: -180, maximum: 180}
+    JourneyGeometry:
+      type: object
+      additionalProperties: false
+      required: [type, coordinates]
+      properties:
+        type: {type: string, enum: [LineString]}
+        coordinates: {type: array, minItems: 2, items: {type: array, minItems: 2, maxItems: 2, items: {type: number, description: '[longitude, latitude]'}}}
     JourneySegment:
       type: object
       additionalProperties: false
-      required: [sequence, mode, otp_mode, from, to, start_at, end_at, duration_seconds, distance_meters, route_id, route_short_name, trip_id, service_date, timing_precision, evidence_type, entity_bindings, operational_flags]
+      required: [sequence, mode, otp_mode, from, to, start_at, end_at, duration_seconds, distance_meters, route_id, route_short_name, trip_id, service_date, timing_precision, geometry, evidence_type, entity_bindings, operational_flags]
       properties:
         sequence: {type: integer, minimum: 0}
         mode: {type: string, enum: [WALK, TRANSJAKARTA, MIKROTRANS, KRL, MRT_JAKARTA, LRT_JAKARTA, LRT_JABODEBEK]}
@@ -700,6 +707,7 @@ components:
         trip_id: {type: [string, 'null']}
         service_date: {type: [string, 'null'], format: date}
         timing_precision: {type: string, enum: [EXACT_SCHEDULE, FREQUENCY_DERIVED, SOURCE_GTFS_WITH_FREQUENCIES, ESTIMATED]}
+        geometry: {anyOf: [{$ref: '#/components/schemas/JourneyGeometry'}, {type: 'null'}]}
         evidence_type: {$ref: '#/components/schemas/EvidenceType'}
         entity_bindings: {type: array, items: {$ref: '#/components/schemas/JourneyEntityBinding'}}
         operational_flags: {type: array, items: {$ref: '#/components/schemas/JourneyOperationalFlag'}}

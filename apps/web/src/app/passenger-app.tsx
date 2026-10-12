@@ -10,6 +10,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { passengerApi } from '../lib/passenger-api';
 import { DEMO_REPLAY } from '../lib/demo-replay';
 import { PlaceSearch } from './place-search';
+import { JourneyMap } from './journey-map';
 import {
   distinctModes,
   easiestAmongShown,
@@ -644,6 +645,7 @@ export function PassengerApp() {
               {displayed.fare_status === 'UNKNOWN' && (
                 <p className="fine-print">Fare information is unavailable.</p>
               )}
+              <JourneyMap journey={displayed} />
               <details className="evidence-details">
                 <summary>Schedule and source details</summary>
                 <p>

@@ -820,6 +820,11 @@ export interface components {
             latitude?: number | null;
             longitude?: number | null;
         };
+        JourneyGeometry: {
+            /** @enum {string} */
+            type: "LineString";
+            coordinates: number[][];
+        };
         JourneySegment: {
             sequence: number;
             /** @enum {string} */
@@ -840,6 +845,7 @@ export interface components {
             service_date: string | null;
             /** @enum {string} */
             timing_precision: "EXACT_SCHEDULE" | "FREQUENCY_DERIVED" | "SOURCE_GTFS_WITH_FREQUENCIES" | "ESTIMATED";
+            geometry: components["schemas"]["JourneyGeometry"] | null;
             evidence_type: components["schemas"]["EvidenceType"];
             entity_bindings: components["schemas"]["JourneyEntityBinding"][];
             operational_flags: components["schemas"]["JourneyOperationalFlag"][];

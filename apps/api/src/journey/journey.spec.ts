@@ -203,6 +203,7 @@ describe('Phase 4B product journey orchestration', () => {
         route: null,
         trip: null,
         intermediateStops: null,
+        legGeometry: null,
         start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
         end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
       },
@@ -211,6 +212,67 @@ describe('Phase 4B product journey orchestration', () => {
     assert.equal(leg.mode, 'WALK');
     assert.deepEqual(leg.intermediateStops, []);
     assert.equal(leg.from.latitude, -6.2);
+  });
+
+  it('decodes OTP leg geometry into GeoJSON [longitude, latitude] coordinates', () => {
+    const leg = normalizeLeg(
+      {
+        mode: 'WALK',
+        serviceDate: null,
+        distance: 120,
+        duration: 90,
+        from: { name: 'A', lat: 38.5, lon: -120.2, stop: null },
+        to: { name: 'B', lat: 43.252, lon: -126.453, stop: null },
+        route: null,
+        trip: null,
+        intermediateStops: null,
+        legGeometry: { points: '_p~iF~ps|U_ulLnnqC_mqNvxq`@' },
+        start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
+        end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
+      },
+      0,
+    );
+    assert.deepEqual(leg.geometry, {
+      type: 'LineString',
+      coordinates: [
+        [-120.2, 38.5],
+        [-120.95, 40.7],
+        [-126.453, 43.252],
+      ],
+    });
+  });
+
+  it('keeps geometry null when OTP omits or truncates the polyline', () => {
+    const base = {
+      mode: 'WALK',
+      serviceDate: null,
+      distance: null,
+      duration: null,
+      from: { name: 'A', lat: -6.2, lon: 106.8, stop: null },
+      to: { name: 'B', lat: -6.21, lon: 106.81, stop: null },
+      route: null,
+      trip: null,
+      intermediateStops: null,
+      start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
+      end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
+    };
+    assert.equal(
+      normalizeLeg({ ...base, legGeometry: null }, 0).geometry,
+      null,
+    );
+    assert.equal(
+      normalizeLeg({ ...base, legGeometry: { points: '' } }, 0).geometry,
+      null,
+    );
+    assert.equal(
+      normalizeLeg({ ...base, legGeometry: { points: '_p~iF' } }, 0).geometry,
+      null,
+    );
+    assert.equal(
+      normalizeLeg({ ...base, legGeometry: { points: '~'.repeat(14) } }, 0)
+        .geometry,
+      null,
+    );
   });
 
   it('fails explicitly when a transit entity lacks a canonical Twin binding', () => {
