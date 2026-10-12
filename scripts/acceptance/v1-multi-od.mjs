@@ -30,6 +30,13 @@ const corridors = [
     origin: 'Lebak Bulus',
     destination: 'Fatmawati',
   },
+  { id: 'BOGOR_SUDIRMAN', origin: 'Bogor', destination: 'Sudirman' },
+  { id: 'DEPOK_MANGGARAI', origin: 'Depok', destination: 'Manggarai' },
+  { id: 'TANGERANG_MANGGARAI', origin: 'Tangerang', destination: 'Manggarai' },
+  { id: 'BEKASI_MANGGARAI', origin: 'Bekasi', destination: 'Manggarai' },
+  { id: 'BSD_MANGGARAI', origin: 'BSD', destination: 'Manggarai' },
+  { id: 'TANJUNG_PRIOK_KOTA', origin: 'Tanjung Priok', destination: 'Kota' },
+  { id: 'CILEBUT_DEPOK', origin: 'Cilebut', destination: 'Depok' },
 ];
 
 // Kemang has no licensed POI index yet; the destination is an approximate street coordinate,
@@ -142,6 +149,23 @@ for (const corridor of corridors) {
       `${corridor.id}: no alternative returned`,
     );
     assertPreferenceInvariant(corridor.id, preference, result.data);
+    for (const journey of result.data) {
+      assert.equal(
+        journey.network_snapshot_id,
+        snapshot,
+        `${corridor.id}: snapshot provenance drift`,
+      );
+      assert.equal(
+        journey.routing_context.common_service_date,
+        '2026-10-02',
+        `${corridor.id}: service-date provenance drift`,
+      );
+      assert.ok(journey.segments.length > 0, `${corridor.id}: empty itinerary`);
+      assert.ok(
+        journey.segments.every((segment) => segment.geometry !== null),
+        `${corridor.id}: missing real leg geometry`,
+      );
+    }
     caseEvidence.preferences.push({
       preference,
       alternatives: result.data.length,

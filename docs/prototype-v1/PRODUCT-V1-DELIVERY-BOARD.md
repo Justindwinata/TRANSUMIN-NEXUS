@@ -14,7 +14,7 @@ This repository is a sanitized product-publication lineage. It is **not** the or
 
 ## Current milestone
 
-M2 complete. M3 is in progress and NOT VERIFIED; M4 remains NOT_RUN.
+M2 complete. M3 read-only interactive map acceptance PASS; full snapshot mutation E2E BLOCKED_BY_ENVIRONMENT; M4–M7 remain incomplete.
 
 ## Verified capabilities
 
@@ -41,6 +41,7 @@ M2 complete. M3 is in progress and NOT VERIFIED; M4 remains NOT_RUN.
 - `pnpm --filter @transum-in/web test` (smoke via web proxy): PASS — real OTP plan, activation, progress immutability.
 - `pnpm --filter @transum-in/web test:browser:e2e` (Playwright/Chrome, two independent browser contexts, real OTP + DB): PASS — targeted alert isolation (1 affected / 0 unrelated), recovery `COMPLETED` with blocked-entity avoidance, SSE reconnect; screenshots in ignored `data/processed/product-p1r-browser/`.
 - `pnpm typecheck`, `pnpm lint`, `pnpm openapi:validate`, `pnpm api:types:check`: PASS.
+- M3 interactive MapLibre GL browser acceptance (read-only real flow, `pnpm --filter @transum-in/web test:browser:map`, desktop Chrome against dev web 3002 + real API/OTP/product DB): PASS — plan HTTP 201, 2 alternatives, geometry `[lon,lat]` bounds + ≤10k points validated, MapLibre canvas/keyboards selection (`aria-pressed`)/pan/zoom wheel+drag, markers 4, attribution, walking `UNVERIFIED_SCHEMATIC`, screenshots `data/processed/product-v1-map-browser/`. Active-journey mutation E2E remains blocked below.
 - M3 leg-geometry contract (partial): `JourneySegment.geometry` nullable GeoJSON `LineString` (`docs/api/openapi-v1.yaml`), populated from OTP `legGeometry` encoded polyline; `pnpm --filter @transum-in/api test` PASS 85/85 including decoder round-trip, null-when-absent, and truncated-input rejection; `active-journey.controller.ts` re-validates stored geometry on read.
 - M3 static map render (prototype, browser-verified via desktop review pane): `/` journey detail renders OSM slippy tiles, per-segment mode-coloured polylines (dashed walk), Origin/Boarding/Alighting/Transfer/Destination markers, `© OpenStreetMap contributors` + provider attribution; route follows real geometry rather than a straight line. Interactive pan/zoom and MapLibre conformance remain incomplete, so M3 is NOT VERIFIED.
 - Restored tracked test fixture `data/fixtures/petabencana/recorded-flood-area-minimized.json` (`RECORDED_MINIMIZED_NOT_LIVE` sample) required by `operational-data.spec.ts`; it was excluded from the earlier publication filter, which silently broke one API test.

@@ -7,15 +7,17 @@
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start --port 3000",
-    "test": "node --experimental-strip-types --test src/lib/passenger.test.mjs",
+    "test": "node --experimental-strip-types --test src/lib/passenger.test.mjs src/lib/map-geometry.test.mjs",
     "test:e2e": "node scripts/passenger-smoke.mjs",
     "test:browser:e2e": "node scripts/passenger-browser-acceptance.mjs",
+    "test:browser:map": "node scripts/journey-map-browser-acceptance.mjs",
     "test:demo": "pnpm --filter @transum-in/api test:demo",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",
     "@transum-in/shared-types": "workspace:*",
+    "maplibre-gl": "^5.20.0",
     "next": "16.3.6",
     "react": "19.3.0",
     "react-dom": "19.3.0"

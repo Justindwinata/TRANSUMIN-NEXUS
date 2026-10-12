@@ -390,24 +390,30 @@ button:disabled {
   border-radius: var(--radius-card);
   background: #e5e9e7;
 }
-.map-tiles,
-.map-overlay {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-.map-tiles {
-  z-index: -1;
-  overflow: hidden;
+.maplibre-frame {
+  min-height: 280px;
+  height: min(56vh, 520px);
   background: #e5e9e7;
 }
-.map-tiles img {
-  position: absolute;
-  max-width: none;
+.maplibre-frame .maplibregl-canvas {
+  outline: none;
 }
-.map-overlay {
-  overflow: visible;
+.map-marker {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 2px solid #172025;
+  border-radius: 50%;
+  background: #fff;
+  color: #172025;
+  font-size: 10px;
+  font-weight: 800;
+}
+.map-marker.transfer {
+  border-color: #fff;
+  background: #b65b36;
+  color: #fff;
 }
 .map-marker circle {
   fill: #fff;

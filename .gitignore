@@ -6,6 +6,7 @@
 # dependencies and build outputs
 node_modules/
 .next/
+.next-product-acceptance/
 dist/
 build/
 coverage/

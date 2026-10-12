@@ -548,6 +548,7 @@ export function PassengerApp() {
                 type="button"
                 className={`alternative ${selected?.journey_id === journey.journey_id ? 'selected' : ''}`}
                 onClick={() => setSelected(journey)}
+                onFocus={() => setSelected(journey)}
                 aria-pressed={selected?.journey_id === journey.journey_id}
               >
                 <span className="alternative-time">
@@ -634,7 +635,7 @@ export function PassengerApp() {
                       <small>
                         {formatDuration(segment.duration_seconds)}
                         {segment.mode === 'WALK'
-                          ? ` · ${formatDistance(segment.distance_meters)}`
+                          ? ` · ${formatDistance(segment.distance_meters)} router estimate · path not independently validated`
                           : ''}
                         {position ? ` · ${position}` : ''}
                       </small>

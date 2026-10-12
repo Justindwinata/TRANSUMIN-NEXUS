@@ -35,9 +35,18 @@ Purpose: reproduce the isolated product database and OTP runtime used by Prototy
 
 ## 3. Acceptance
 
+Use safe product acceptance runner. It loads ignored `.env`, requires exact `127.0.0.1:5435` product server identity and product volume, requires 8 GiB reserve plus 2x source-size headroom from host and Docker `df`, creates UUID-named scratch DB, marks it with invocation UUID, streams `pg_dump -Fc` from product source into `pg_restore` on same server, builds and starts owned web production (`next build` + `next start` on `3002` with isolated `.next-product-acceptance`), lets browser harness own API process on `3003`, and drops scratch only on pass after exact marker/OID/owner/session checks.
+
+```bash
+pnpm --filter @transum-in/api data:product-acceptance
+```
+
+Failure retains scratch for inspection. Runner never calls `demo-database-lifecycle`, never stops source connections, never prints credentials, and never removes resources it did not create. Browser preflight repeats acceptance DB name/marker/server checks before state-changing requests.
+
 - `pnpm check:integration` (31 tests, self-cleaning).
 - `pnpm --filter @transum-in/web test` (web proxy smoke; requires running web+API+OTP+DB).
-- `pnpm --filter @transum-in/web test:browser:e2e` (Playwright + Chrome; requires `DATABASE_URL` pointing at the isolated DB; screenshots in ignored `data/processed/product-p1r-browser/`).
+- `pnpm --filter @transum-in/web test:browser:e2e` (Playwright + Chrome; requires `DATABASE_URL` pointing at an acceptance scratch DB; screenshots in ignored `data/processed/product-p1r-browser/`).
+- Browser acceptance also checks GeoJSON `[lon,lat]`, endpoint agreement within ~2 km, MapLibre canvas/source rendering, attribution/markers, pan/zoom input, responsive overflow, and isolated missing-geometry fallback. It does not assert Phase4A-R validation.
 
 ## Boundaries
 

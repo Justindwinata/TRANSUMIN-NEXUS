@@ -321,6 +321,10 @@ function parseGeometry(value: unknown): JourneyLeg['geometry'] {
     throw new BadRequestException(
       'segment geometry must be a GeoJSON LineString.',
     );
+  if (geometry.coordinates.length > 10_000)
+    throw new BadRequestException(
+      'segment geometry must contain at most 10000 points.',
+    );
   const coordinates = geometry.coordinates.map((coordinate) => {
     if (
       !Array.isArray(coordinate) ||
