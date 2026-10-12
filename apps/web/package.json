@@ -1,0 +1,32 @@
+{
+  "name": "@transum-in/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start --port 3000",
+    "test": "node --experimental-strip-types --test src/lib/passenger.test.mjs",
+    "test:e2e": "node scripts/passenger-smoke.mjs",
+    "test:browser:e2e": "node scripts/passenger-browser-acceptance.mjs",
+    "test:demo": "pnpm --filter @transum-in/api test:demo",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "@transum-in/shared-types": "workspace:*",
+    "next": "16.3.6",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "22.20.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "playwright-core": "^1.63.0",
+    "postcss": "8.5.28",
+    "tailwindcss": "4.3.3"
+  }
+}

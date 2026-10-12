@@ -1,0 +1,965 @@
+'use client';
+
+import {
+  BusIcon,
+  PersonSimpleWalkIcon,
+  TrainIcon,
+  WarningCircleIcon,
+} from '@phosphor-icons/react';
+import { useEffect, useState, type FormEvent } from 'react';
+import { passengerApi } from '../lib/passenger-api';
+import { DEMO_REPLAY } from '../lib/demo-replay';
+import { PlaceSearch } from './place-search';
+import {
+  distinctModes,
+  easiestAmongShown,
+  alertIsCurrent,
+  evidenceLabel,
+  errorMessage,
+  formatClock,
+  formatDistance,
+  formatDuration,
+  initialJakartaDateTime,
+  journeySearchFailure,
+  modeName,
+  parsePoint,
+  passengerRouteName,
+  recoveryPart,
+  recoveryPartLabel,
+  recoverySummary,
+  samePassengerLeg,
+  segmentPosition,
+  toJakartaIso,
+  transferLabel,
+  type Journey,
+  type JourneyPreference,
+  type JourneyAlert,
+  type Recovery,
+  type TransitPlace,
+} from '../lib/passenger';
+
+const ownerKey = 'transumin.passenger.owner';
+const journeyKey = 'transumin.passenger.journey';
+const recoveryKey = 'transumin.passenger.recovery';
+
+function ModeIcon({ mode }: { mode: Journey['segments'][number]['mode'] }) {
+  const Icon =
+    mode === 'WALK'
+      ? PersonSimpleWalkIcon
+      : mode === 'TRANSJAKARTA' || mode === 'MIKROTRANS'
+        ? BusIcon
+        : TrainIcon;
+  return <Icon size={18} weight="regular" aria-hidden="true" />;
+}
+
+export function PassengerApp() {
+  const [owner, setOwner] = useState('');
+  const [snapshotId, setSnapshotId] = useState('');
+  const [originPlace, setOriginPlace] = useState<TransitPlace | null>(null);
+  const [destinationPlace, setDestinationPlace] = useState<TransitPlace | null>(
+    null,
+  );
+  const [advancedCoordinates, setAdvancedCoordinates] = useState(false);
+  const [originLat, setOriginLat] = useState('');
+  const [originLon, setOriginLon] = useState('');
+  const [destinationLat, setDestinationLat] = useState('');
+  const [destinationLon, setDestinationLon] = useState('');
+  const [departure, setDeparture] = useState('');
+  const [preference, setPreference] = useState<JourneyPreference>('BALANCED');
+  const [progressAt, setProgressAt] = useState('');
+  const [alternatives, setAlternatives] = useState<Journey[]>([]);
+  const [selected, setSelected] = useState<Journey | null>(null);
+  const [active, setActive] = useState<Journey | null>(null);
+  const [alerts, setAlerts] = useState<JourneyAlert[]>([]);
+  const [recovery, setRecovery] = useState<Recovery | null>(null);
+  const [alertError, setAlertError] = useState('');
+  const [streamStatus, setStreamStatus] = useState<
+    'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'OFFLINE'
+  >('OFFLINE');
+  const [busy, setBusy] = useState<
+    'search' | 'activate' | 'progress' | 'recovery' | null
+  >(null);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    setDeparture(initialJakartaDateTime());
+    setProgressAt(initialJakartaDateTime());
+    let storedOwner = localStorage.getItem(ownerKey);
+    if (!storedOwner) {
+      storedOwner = `passenger:${crypto.randomUUID()}`;
+      localStorage.setItem(ownerKey, storedOwner);
+    }
+    setOwner(storedOwner);
+    const storedJourney = localStorage.getItem(journeyKey);
+    if (storedJourney) {
+      void passengerApi
+        .getJourney(storedJourney, storedOwner)
+        .then((journey) => {
+          setActive(journey);
+          setSelected(journey);
+          const storedRecovery = localStorage.getItem(
+            `${recoveryKey}.${journey.journey_id}`,
+          );
+          if (storedRecovery) {
+            void passengerApi
+              .getRecovery(storedRecovery, storedOwner!)
+              .then(setRecovery)
+              .catch(() => {
+                localStorage.removeItem(`${recoveryKey}.${journey.journey_id}`);
+              });
+          }
+        })
+        .catch(() => localStorage.removeItem(journeyKey));
+    }
+    void passengerApi
+      .config()
+      .then((config) => setSnapshotId(config.network_snapshot_id))
+      .catch((cause: unknown) => setError(errorMessage(cause)));
+  }, []);
+
+  useEffect(() => {
+    if (!active || !owner || active.status !== 'ACTIVE') return;
+    let mounted = true;
+    const controller = new AbortController();
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastEventId: string | null = null;
+    let reconnectAttempt = 0;
+    const journeyId = active.journey_id;
+    const refresh = async () => {
+      try {
+        const result = await passengerApi.alerts(journeyId, owner);
+        if (mounted) {
+          setAlerts(result);
+          setAlertError('');
+        }
+      } catch (cause) {
+        if (mounted) setAlertError(errorMessage(cause));
+      }
+    };
+    const connect = async () => {
+      if (!mounted) return;
+      setStreamStatus(reconnectAttempt === 0 ? 'CONNECTING' : 'RECONNECTING');
+      try {
+        await passengerApi.streamAlerts(
+          journeyId,
+          owner,
+          lastEventId,
+          controller.signal,
+          (event) => {
+            if (!mounted) return;
+            setStreamStatus('CONNECTED');
+            reconnectAttempt = 0;
+            if (event.type !== 'heartbeat' && event.id) lastEventId = event.id;
+            if (
+              event.type === 'journey.alert.created' ||
+              event.type === 'heartbeat'
+            )
+              void refresh();
+          },
+          () => {
+            if (!mounted) return;
+            setStreamStatus('CONNECTED');
+            reconnectAttempt = 0;
+            void refresh();
+          },
+        );
+      } catch (cause) {
+        if (mounted && !controller.signal.aborted)
+          setAlertError(errorMessage(cause));
+      }
+      if (mounted && !controller.signal.aborted) {
+        setStreamStatus('RECONNECTING');
+        void refresh();
+        reconnectAttempt += 1;
+        reconnectTimer = setTimeout(
+          () => void connect(),
+          Math.min(15_000, 1000 * 2 ** Math.min(reconnectAttempt, 4)),
+        );
+      }
+    };
+    void refresh();
+    void connect();
+    return () => {
+      mounted = false;
+      controller.abort();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
+  }, [active?.journey_id, active?.status, owner]);
+
+  async function planJourney(
+    origin: {
+      latitude: number;
+      longitude: number;
+    },
+    destination: { latitude: number; longitude: number },
+    departureAt: string,
+    preference: JourneyPreference = 'BALANCED',
+  ) {
+    setError('');
+    setMessage('');
+    setBusy('search');
+    setAlternatives([]);
+    setSelected(null);
+    try {
+      if (!snapshotId)
+        throw new Error(
+          'Routing snapshot is not ready. Check the passenger configuration.',
+        );
+      const results = await passengerApi.plan({
+        origin: { latitude: origin.latitude, longitude: origin.longitude },
+        destination: {
+          latitude: destination.latitude,
+          longitude: destination.longitude,
+        },
+        departure_at: toJakartaIso(departureAt),
+        network_snapshot_id: snapshotId,
+        preference,
+      });
+      setAlternatives(results);
+      setSelected(results[0] ?? null);
+      if (results.length === 0)
+        setMessage(
+          'No journey was found for this place and departure time. Try another time or destination.',
+        );
+    } catch (cause) {
+      const feedback = journeySearchFailure(cause);
+      if (feedback.empty) setMessage(feedback.message);
+      else setError(feedback.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function search(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const origin = originPlace
+        ? { latitude: originPlace.latitude, longitude: originPlace.longitude }
+        : advancedCoordinates
+          ? parsePoint(originLat, originLon)
+          : missingPlace('origin');
+      const destination = destinationPlace
+        ? {
+            latitude: destinationPlace.latitude,
+            longitude: destinationPlace.longitude,
+          }
+        : advancedCoordinates
+          ? parsePoint(destinationLat, destinationLon)
+          : missingPlace('destination');
+      await planJourney(origin, destination, departure, preference);
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  }
+
+  async function loadScenario() {
+    setError('');
+    setMessage('');
+    setOriginPlace(DEMO_REPLAY.origin);
+    setDestinationPlace(DEMO_REPLAY.destination);
+    setDeparture(DEMO_REPLAY.departure);
+    setAdvancedCoordinates(false);
+    await planJourney(
+      DEMO_REPLAY.origin,
+      DEMO_REPLAY.destination,
+      DEMO_REPLAY.departure,
+      'FEWEST_TRANSFERS',
+    );
+  }
+
+  async function activate() {
+    if (!selected || !owner) return;
+    setBusy('activate');
+    setError('');
+    setMessage('');
+    try {
+      const historical = Date.parse(selected.start_at) < Date.now() - 60_000;
+      const journey = await passengerApi.activate(
+        selected,
+        owner,
+        historical ? selected.start_at : undefined,
+      );
+      setActive(journey);
+      setSelected(journey);
+      if (historical)
+        setProgressAt(initialJakartaDateTime(new Date(selected.start_at)));
+      setAlerts([]);
+      setRecovery(null);
+      localStorage.setItem(journeyKey, journey.journey_id);
+      setMessage(
+        historical
+          ? 'Controlled historical journey started. This is not live travel; progress is manual.'
+          : 'Journey started. Progress is updated manually; location is not tracked.',
+      );
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function completeNextLeg() {
+    if (!active || !owner) return;
+    const next = (active.progress?.completed_segment_count ?? 0) + 1;
+    if (next > active.segments.length) return;
+    setBusy('progress');
+    setError('');
+    try {
+      const updated = await passengerApi.progress(
+        active.journey_id,
+        owner,
+        next,
+        active.segments.length,
+        toJakartaIso(progressAt),
+      );
+      setActive(updated);
+      setSelected(updated);
+      setMessage(
+        `${next} of ${updated.segments.length} journey parts marked complete.`,
+      );
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function proposeRecovery(alert: JourneyAlert) {
+    if (!active || !owner || !alertIsCurrent(alert)) return;
+    setBusy('recovery');
+    setError('');
+    try {
+      const key = `passenger:${active.journey_id}:${alert.impact_id}:${active.progress?.revision ?? 0}`;
+      const timeKey = `transumin.recovery-at.${key}`;
+      let recoveryAt = localStorage.getItem(timeKey);
+      if (!recoveryAt) {
+        recoveryAt = active.progress?.recorded_at ?? new Date().toISOString();
+        localStorage.setItem(timeKey, recoveryAt);
+      }
+      const result = await passengerApi.recovery(
+        active.journey_id,
+        alert.impact_id,
+        owner,
+        key,
+        recoveryAt,
+      );
+      setRecovery(result);
+      localStorage.setItem(
+        `${recoveryKey}.${active.journey_id}`,
+        result.recovery_id,
+      );
+      setMessage(
+        result.status === 'COMPLETED'
+          ? 'Recovery option is ready. Your active journey has not changed.'
+          : 'No safe recovery route was found. Your original plan remains unchanged.',
+      );
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const displayed = selected ?? active;
+  const displayingActive =
+    !!displayed && !!active && displayed.journey_id === active.journey_id;
+  const completed = active?.progress?.completed_segment_count ?? 0;
+  const easiestIds = easiestAmongShown(alternatives);
+  const currentAlerts = alerts.filter(alertIsCurrent);
+  const historicalAlerts = alerts.filter((alert) => !alertIsCurrent(alert));
+  return (
+    <main className="passenger-shell">
+      <header className="passenger-header">
+        <div className="passenger-brand">
+          TRANSUM-IN <span>NEXUS</span>
+        </div>
+        <p>Passenger journey</p>
+      </header>
+      <div className="passenger-layout">
+        <section className="passenger-main" aria-labelledby="search-heading">
+          <div className="section-intro">
+            <h1 id="search-heading">Plan a journey</h1>
+            <p>
+              Compare routes using the available research network. Times are
+              schedules or estimates, not live vehicle positions.
+            </p>
+            <button
+              type="button"
+              className="text-button"
+              disabled={busy !== null || !snapshotId}
+              onClick={() => void loadScenario()}
+            >
+              Load presentation scenario (Gambir → Pejaten, route 6H)
+            </button>
+          </div>
+          {DEMO_REPLAY.label && (
+            <p className="replay-banner" role="note">
+              <strong>{DEMO_REPLAY.label}</strong>
+              <span>
+                Scheduled network · 2 Oct 2026 · {DEMO_REPLAY.timezone} · no
+                live vehicle data
+              </span>
+            </p>
+          )}
+          <form
+            className="search-form"
+            onSubmit={(event) => void search(event)}
+          >
+            <div className="place-grid">
+              <PlaceSearch
+                label="From"
+                snapshotId={snapshotId}
+                value={originPlace}
+                onSelect={setOriginPlace}
+              />
+              <PlaceSearch
+                label="To"
+                snapshotId={snapshotId}
+                value={destinationPlace}
+                onSelect={setDestinationPlace}
+              />
+            </div>
+            <details
+              className="coordinate-details"
+              open={advancedCoordinates}
+              onToggle={(event) =>
+                setAdvancedCoordinates(event.currentTarget.open)
+              }
+            >
+              <summary>Advanced: enter coordinates instead</summary>
+              <p>Use this only if your stop or station is not listed.</p>
+              <div className="place-grid">
+                <div>
+                  <label htmlFor="origin-lat">Origin latitude</label>
+                  <input
+                    id="origin-lat"
+                    inputMode="decimal"
+                    value={originLat}
+                    onChange={(event) => setOriginLat(event.target.value)}
+                  />
+                  <label htmlFor="origin-lon">Origin longitude</label>
+                  <input
+                    id="origin-lon"
+                    inputMode="decimal"
+                    value={originLon}
+                    onChange={(event) => setOriginLon(event.target.value)}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="destination-lat">Destination latitude</label>
+                  <input
+                    id="destination-lat"
+                    inputMode="decimal"
+                    value={destinationLat}
+                    onChange={(event) => setDestinationLat(event.target.value)}
+                  />
+                  <label htmlFor="destination-lon">Destination longitude</label>
+                  <input
+                    id="destination-lon"
+                    inputMode="decimal"
+                    value={destinationLon}
+                    onChange={(event) => setDestinationLon(event.target.value)}
+                  />
+                </div>
+              </div>
+            </details>
+            <div className="search-actions">
+              <label>
+                Rank by
+                <select
+                  value={preference}
+                  onChange={(event) =>
+                    setPreference(event.target.value as JourneyPreference)
+                  }
+                >
+                  <option value="BALANCED">Balanced</option>
+                  <option value="FASTEST">Fastest</option>
+                  <option value="FEWEST_TRANSFERS">Fewest transfers</option>
+                  <option value="LEAST_WALKING">Least walking</option>
+                </select>
+              </label>
+              <label>
+                Depart (Jakarta time)
+                <input
+                  required
+                  type="datetime-local"
+                  value={departure}
+                  onChange={(event) => setDeparture(event.target.value)}
+                  onInput={(event) => setDeparture(event.currentTarget.value)}
+                />
+              </label>
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={busy !== null || !snapshotId}
+              >
+                {busy === 'search' ? 'Finding routes...' : 'Find journeys'}
+              </button>
+            </div>
+          </form>
+          {error && (
+            <div className="feedback error" role="alert">
+              {error}
+            </div>
+          )}
+          {message && (
+            <div className="feedback" role="status">
+              {message}
+            </div>
+          )}
+          <section
+            className="alternatives"
+            aria-labelledby="alternatives-heading"
+          >
+            <div className="section-line">
+              <h2 id="alternatives-heading">Journey choices</h2>
+              <span>
+                {alternatives.length > 0 ? `${alternatives.length} found` : ''}
+              </span>
+            </div>
+            {busy === 'search' && (
+              <div
+                className="loading-rows"
+                role="status"
+                aria-label="Finding journeys"
+              >
+                <div />
+                <div />
+                <div />
+              </div>
+            )}
+            {busy !== 'search' && alternatives.length === 0 && (
+              <p className="empty-state">
+                Search above to see real network routes for your chosen
+                departure time.
+              </p>
+            )}
+            {alternatives.length > 1 && (
+              <p className="fine-print">
+                Easiest among shown = fewest transfers, then least walking. Only
+                returned candidates compared; fares unavailable.
+              </p>
+            )}
+            {alternatives.map((journey, index) => (
+              <button
+                key={journey.journey_id}
+                type="button"
+                className={`alternative ${selected?.journey_id === journey.journey_id ? 'selected' : ''}`}
+                onClick={() => setSelected(journey)}
+                aria-pressed={selected?.journey_id === journey.journey_id}
+              >
+                <span className="alternative-time">
+                  {formatClock(journey.start_at)} <span>to</span>{' '}
+                  {formatClock(journey.end_at)}
+                </span>
+                <span className="alternative-route">
+                  {distinctModes(journey).map((mode, modeIndex) => (
+                    <span className="mode-symbol" key={mode}>
+                      {modeIndex > 0 && <span aria-hidden="true">+</span>}
+                      <ModeIcon mode={mode} />
+                      <span>{modeName(mode)}</span>
+                    </span>
+                  ))}
+                </span>
+                <span className="alternative-meta">
+                  {formatDuration(journey.duration_seconds)} ·{' '}
+                  {transferLabel(journey.transfer_count)} ·{' '}
+                  {formatDistance(journey.walking_distance_meters)} walking
+                </span>
+                <span className="alternative-index">
+                  {alternatives.length > 1 &&
+                    easiestIds.includes(journey.journey_id) && (
+                      <strong>Easiest among shown · </strong>
+                    )}
+                  Option {index + 1}
+                </span>
+              </button>
+            ))}
+          </section>
+        </section>
+        <aside className="journey-detail" aria-labelledby="detail-heading">
+          <div className="section-line">
+            <h2 id="detail-heading">
+              {displayingActive ? 'Your active journey' : 'Journey detail'}
+            </h2>
+          </div>
+          {!displayed && (
+            <p className="empty-state">
+              Choose a journey to inspect its parts before starting.
+            </p>
+          )}
+          {displayed && (
+            <>
+              {displayingActive &&
+                Date.parse(displayed.start_at) < Date.now() - 60_000 && (
+                  <p className="feedback">
+                    Controlled historical journey · not live tracking.
+                  </p>
+                )}
+              <div className="journey-summary">
+                <strong>
+                  {formatClock(displayed.start_at)} to{' '}
+                  {formatClock(displayed.end_at)}
+                </strong>
+                <span>
+                  {formatDuration(displayed.duration_seconds)} ·{' '}
+                  {transferLabel(displayed.transfer_count)}
+                </span>
+              </div>
+              <ol className="leg-list">
+                {displayed.segments.map((segment) => {
+                  const position = displayingActive
+                    ? segmentPosition(segment.sequence, completed)
+                    : null;
+                  return (
+                    <li
+                      key={`${segment.sequence}-${segment.mode}`}
+                      className={position ?? ''}
+                    >
+                      <div className="leg-heading">
+                        <span className="mode-symbol">
+                          <ModeIcon mode={segment.mode} />
+                          {modeName(segment.mode)}
+                          {passengerRouteName(segment)
+                            ? ` ${passengerRouteName(segment)}`
+                            : ''}
+                        </span>
+                        <time>{formatClock(segment.start_at)}</time>
+                      </div>
+                      <p>
+                        {segment.from.name} <span>to</span> {segment.to.name}
+                      </p>
+                      <small>
+                        {formatDuration(segment.duration_seconds)}
+                        {segment.mode === 'WALK'
+                          ? ` · ${formatDistance(segment.distance_meters)}`
+                          : ''}
+                        {position ? ` · ${position}` : ''}
+                      </small>
+                    </li>
+                  );
+                })}
+              </ol>
+              {displayed.fare_status === 'UNKNOWN' && (
+                <p className="fine-print">Fare information is unavailable.</p>
+              )}
+              <details className="evidence-details">
+                <summary>Schedule and source details</summary>
+                <p>
+                  Router: {displayed.routing_context.provider}{' '}
+                  {displayed.routing_context.provider_version}. Network
+                  snapshot: {displayed.routing_context.network_snapshot_id}.
+                  Service date: {displayed.routing_context.common_service_date}{' '}
+                  ({displayed.routing_context.timezone}). Frequency-derived
+                  departures are not exact guarantees.
+                </p>
+              </details>
+              {!displayingActive && (
+                <button
+                  type="button"
+                  className="primary-button full"
+                  disabled={busy !== null || !owner}
+                  onClick={() => void activate()}
+                >
+                  {busy === 'activate' ? 'Starting...' : 'Start this journey'}
+                </button>
+              )}
+              {displayingActive && active && (
+                <div className="progress-actions">
+                  <p>
+                    {completed} of {active.segments.length} parts complete.
+                    Progress is manual.
+                  </p>
+                  <label>
+                    Progress time (Jakarta, controlled)
+                    <input
+                      required
+                      type="datetime-local"
+                      value={progressAt}
+                      onChange={(event) => setProgressAt(event.target.value)}
+                      onInput={(event) =>
+                        setProgressAt(event.currentTarget.value)
+                      }
+                    />
+                  </label>
+                  <p className="fine-print">
+                    For a historical research journey, enter the actual
+                    controlled scenario time. This is not GPS or live tracking.
+                  </p>
+                  <button
+                    type="button"
+                    className="primary-button full"
+                    disabled={
+                      busy !== null || completed >= active.segments.length
+                    }
+                    onClick={() => void completeNextLeg()}
+                  >
+                    {busy === 'progress'
+                      ? 'Saving...'
+                      : completed >= active.segments.length
+                        ? 'Journey complete'
+                        : 'Mark current part complete'}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+          {active && (
+            <section
+              className="operational-section"
+              aria-labelledby="alert-heading"
+            >
+              <div className="section-line">
+                <h2 id="alert-heading">Journey updates</h2>
+                <span>{currentAlerts.length} current</span>
+              </div>
+              <p className="fine-print">
+                {streamStatus === 'CONNECTED'
+                  ? 'Connected to journey-specific updates.'
+                  : streamStatus === 'RECONNECTING'
+                    ? 'Reconnecting to journey updates. Latest alerts remain available.'
+                    : streamStatus === 'CONNECTING'
+                      ? 'Connecting to journey updates…'
+                      : 'Journey updates are offline. Reload to retry.'}
+              </p>
+              {alertError && (
+                <p className="feedback error" role="alert">
+                  Updates could not be refreshed: {alertError}
+                </p>
+              )}
+              {currentAlerts.length === 0 && (
+                <p className="empty-state">
+                  No current disruption alert for this journey. This does not
+                  confirm that every service is available.
+                </p>
+              )}
+              {currentAlerts.map((alert) => (
+                <article
+                  key={alert.alert_id}
+                  className="alert-card"
+                  aria-label="Targeted journey alert"
+                >
+                  <div className="alert-topline">
+                    <strong className="mode-symbol">
+                      <WarningCircleIcon
+                        size={19}
+                        weight="regular"
+                        aria-hidden="true"
+                      />
+                      {alert.operational_state.replaceAll('_', ' ')}
+                    </strong>
+                    <span
+                      className={
+                        alert.evidence_type === 'SIMULATED'
+                          ? 'evidence simulated'
+                          : 'evidence'
+                      }
+                    >
+                      {evidenceLabel(alert.evidence_type)}
+                    </span>
+                  </div>
+                  <p>{alert.message}</p>
+                  <small>
+                    Part
+                    {alert.affected_segment_sequences.length === 1
+                      ? ''
+                      : 's'}{' '}
+                    {alert.affected_segment_sequences
+                      .map((sequence) => sequence + 1)
+                      .join(', ')}{' '}
+                    affected · observed{' '}
+                    {alert.observed_at
+                      ? formatClock(alert.observed_at)
+                      : 'time unknown'}{' '}
+                    · {alert.freshness_status.toLowerCase()}
+                  </small>
+                  <details className="evidence-details">
+                    <summary>Source and evidence</summary>
+                    <p>
+                      Source: {alert.source_id ?? 'not identified'} ·{' '}
+                      {alert.provenance_ref ?? 'No source reference'} · expires:{' '}
+                      {alert.expires_at ?? 'not specified'}.
+                    </p>
+                  </details>
+                  <button
+                    type="button"
+                    className="primary-button full"
+                    disabled={
+                      busy !== null || alert.operational_state === 'RECOVERING'
+                    }
+                    onClick={() => void proposeRecovery(alert)}
+                  >
+                    {busy === 'recovery'
+                      ? 'Finding a safe option...'
+                      : 'Find another way'}
+                  </button>
+                </article>
+              ))}
+              {historicalAlerts.length > 0 && (
+                <details className="evidence-details alert-history">
+                  <summary>
+                    Retained incident history ({historicalAlerts.length})
+                  </summary>
+                  <ul className="compact-legs">
+                    {historicalAlerts.map((alert) => (
+                      <li key={alert.alert_id}>
+                        <span className="structure-tag completed">
+                          {alert.resolved_at ? 'Resolved' : 'Expired'}
+                        </span>
+                        <strong>
+                          {alert.operational_state.replaceAll('_', ' ')}
+                        </strong>
+                        <small>
+                          {alert.message} ·{' '}
+                          {alert.resolved_at
+                            ? `closed ${formatClock(alert.resolved_at)}`
+                            : 'no longer current'}
+                        </small>
+                      </li>
+                    ))}
+                  </ul>
+                  <p>
+                    Historical evidence is retained. Closed alerts no longer
+                    affect your current journey status.
+                  </p>
+                </details>
+              )}
+            </section>
+          )}
+          {active &&
+            recovery &&
+            recovery.original_journey_id === active.journey_id && (
+              <section
+                className="operational-section"
+                aria-labelledby="recovery-heading"
+              >
+                <div className="section-line">
+                  <h2 id="recovery-heading">Recovery option</h2>
+                </div>
+                <p className="recovery-summary">{recoverySummary(recovery)}</p>
+                <p className="fine-print">
+                  This is a proposal. It does not automatically replace your
+                  active journey.
+                </p>
+                {active.progress?.revision !== recovery.progress_revision && (
+                  <p className="feedback error" role="status">
+                    Journey progress has changed since this proposal. Request a
+                    fresh recovery before using it.
+                  </p>
+                )}
+                <div className="comparison-grid">
+                  <div>
+                    <h3>Original remaining trip</h3>
+                    <ol className="compact-legs">
+                      {active.segments
+                        .filter(
+                          (segment) =>
+                            segment.sequence >=
+                            recovery.completed_segment_count,
+                        )
+                        .map((segment) => (
+                          <li key={segment.sequence}>
+                            <span
+                              className={`structure-tag ${recoveryPart(segment.sequence, recovery).toLowerCase()}`}
+                            >
+                              {alerts.some(
+                                (alert) =>
+                                  alert.impact_id === recovery.impact_id &&
+                                  alert.affected_segment_sequences.includes(
+                                    segment.sequence,
+                                  ),
+                              )
+                                ? 'Affected by disruption'
+                                : recoveryPartLabel(
+                                    recoveryPart(segment.sequence, recovery),
+                                  )}
+                            </span>
+                            <strong>
+                              {modeName(segment.mode)}
+                              {passengerRouteName(segment)
+                                ? ` ${passengerRouteName(segment)}`
+                                : ''}
+                            </strong>
+                            <small>
+                              {segment.from.name} → {segment.to.name}
+                            </small>
+                          </li>
+                        ))}
+                    </ol>
+                  </div>
+                  <div>
+                    <h3>Recommended route</h3>
+                    {recovery.proposed_journey ? (
+                      <ol className="compact-legs">
+                        {recovery.proposed_journey.segments.map((segment) => (
+                          <li key={segment.sequence}>
+                            <span className="structure-tag">
+                              {active.segments.some(
+                                (original) =>
+                                  recovery.rejoined_segments.includes(
+                                    original.sequence,
+                                  ) && samePassengerLeg(original, segment),
+                              )
+                                ? 'Rejoins original trip'
+                                : active.segments.some(
+                                      (original) =>
+                                        recovery.preserved_segments.includes(
+                                          original.sequence,
+                                        ) &&
+                                        samePassengerLeg(original, segment),
+                                    )
+                                  ? 'Stays the same'
+                                  : 'New connection'}
+                            </span>
+                            <strong>
+                              {modeName(segment.mode)}
+                              {passengerRouteName(segment)
+                                ? ` ${passengerRouteName(segment)}`
+                                : ''}
+                            </strong>
+                            <small>
+                              {segment.from.name} → {segment.to.name}
+                            </small>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : (
+                      <p>No safe replacement is available.</p>
+                    )}
+                  </div>
+                </div>
+                <p className="fine-print">
+                  {recovery.rejoin_status === 'REJOINED'
+                    ? 'The route reconnects with a valid part of your original trip.'
+                    : recovery.rejoin_status === 'SUFFIX_REPLANNED'
+                      ? 'The remaining route was replanned because reconnecting was not feasible.'
+                      : 'A safe connection could not be found.'}
+                </p>
+                <details className="evidence-details">
+                  <summary>
+                    Compare with a fresh plan and view research detail
+                  </summary>
+                  <p>
+                    Full replan from the same recovery point:{' '}
+                    {recovery.baseline_journey
+                      ? `${formatDuration(recovery.baseline_journey.duration_seconds)}, ${recovery.baseline_journey.transfer_count} transfers`
+                      : 'no route available'}
+                    . Preserved {recovery.preserved_segment_count} original
+                    future parts; replaced {recovery.changed_segment_count}.
+                    Network snapshot {recovery.network_snapshot_id}; projection{' '}
+                    {recovery.mobility_projection_version}. Recovery ID{' '}
+                    {recovery.recovery_id}.
+                  </p>
+                </details>
+              </section>
+            )}
+        </aside>
+      </div>
+    </main>
+  );
+}
+
+function missingPlace(which: 'origin' | 'destination'): never {
+  throw new Error(`Choose a ${which} stop or station from the suggestions.`);
+}

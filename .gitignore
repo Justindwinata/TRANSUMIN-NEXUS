@@ -1,0 +1,32 @@
+# local secrets
+.env
+.env.*
+!.env.example
+
+# dependencies and build outputs
+node_modules/
+.next/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.cache/
+.turbo/
+.nx/
+
+# runtime, data and local evidence
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+data/raw/**
+data/staging/**
+data/processed/**
+artifacts/evaluation/raw/**
+artifacts/evaluation/logs/**
+
+# local recovery and platform noise
+.DS_Store
+._*
+__MACOSX/
