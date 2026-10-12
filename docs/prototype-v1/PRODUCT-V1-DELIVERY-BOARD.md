@@ -14,7 +14,7 @@ This repository is a sanitized product-publication lineage. It is **not** the or
 
 ## Current milestone
 
-M1 complete; M3 (interactive map) is next.
+M2 complete; M3 (interactive map) is next.
 
 ## Verified capabilities
 
@@ -37,6 +37,7 @@ M1 complete; M3 (interactive map) is next.
   - `pnpm data:phase4ba:validate`: PASS; regenerated manifest SHA-256 `1f493716d20ad5ffa2e3628ece67f2511235f2abfacef4cd7b2b2af9f73dfb77` identical to accepted value.
 - M1 real API: `health/ready` PASS (PostGIS 3.6.4); real OD plan POST `/api/v1/journeys/plan` returns 3 real OTP alternatives (MIKROTRANS+WALK+KRL etc.); invalid coordinates → `INVALID_PARAMETER`; ocean OD → truthful `NO_ROUTE`; unknown snapshot → 503 without detail leak.
 - `pnpm check:integration`: PASS 31/31 against isolated product DB (self-cleaning fixtures).
+- `pnpm acceptance:v1:multi-od`: PASS against real OTP/API/DB. Place-search-resolved Bogor–Cilebut, Kelapa Gading–Manggarai, and Lebak Bulus–Fatmawati corridors return scheduled alternatives; `FASTEST`, `FEWEST_TRANSFERS`, and `LEAST_WALKING` first-option invariants hold. Manggarai–Kemang uses an explicitly approximate coordinate (no fabricated POI) and returns 3 alternatives.
 - `pnpm --filter @transum-in/web test` (smoke via web proxy): PASS — real OTP plan, activation, progress immutability.
 - `pnpm --filter @transum-in/web test:browser:e2e` (Playwright/Chrome, two independent browser contexts, real OTP + DB): PASS — targeted alert isolation (1 affected / 0 unrelated), recovery `COMPLETED` with blocked-entity avoidance, SSE reconnect; screenshots in ignored `data/processed/product-p1r-browser/`.
 - `pnpm typecheck`, `pnpm lint`, `pnpm openapi:validate`, `pnpm api:types:check`: PASS.
@@ -48,7 +49,7 @@ M1 complete; M3 (interactive map) is next.
 
 - M0: PASS (remote verified).
 - M1: PASS (real API + isolated DB + OTP + browser smoke).
-- M2 (generalized planning): functional baseline verified via real OD pairs and place search; dedicated generalized-OD acceptance matrix not yet recorded.
+- M2 (generalized planning): PASS (`pnpm acceptance:v1:multi-od`; place-search-resolved named corridors plus one approximate-coordinate destination; preference-ranking invariants verified; evidence JSON in ignored `data/processed/acceptance/`).
 - M3–M7: NOT_RUN.
 - V01–V20 and S01–S14: retain statuses in `PROTOTYPE-V1-CAPABILITY-AND-COVERAGE.md`; no new PASS claimed.
 
