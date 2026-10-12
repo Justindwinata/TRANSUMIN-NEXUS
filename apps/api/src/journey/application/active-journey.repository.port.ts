@@ -16,6 +16,8 @@ export type ActivateJourneyInput = Readonly<{
   planFingerprint: string;
   dependencies: readonly Omit<JourneyDependency, 'dependencyId'>[];
   activatedAt: string;
+  idempotencyKey?: string;
+  requestFingerprint?: string;
 }>;
 
 export type ProgressUpdateInput = Readonly<{
@@ -36,6 +38,8 @@ export interface ActiveJourneyRepositoryPort {
   activate(input: ActivateJourneyInput): Promise<ActiveJourney>;
   get(journeyId: string, ownerRef: string): Promise<ActiveJourney>;
   updateProgress(input: ProgressUpdateInput): Promise<ActiveJourney>;
+  confirmBoarding(input: Readonly<{ journeyId: string; ownerRef: string; legSequence: number; confirmedAt: string }>): Promise<ActiveJourney>;
+  confirmAlighting(input: Readonly<{ journeyId: string; ownerRef: string; legSequence: number; confirmedAt: string }>): Promise<ActiveJourney>;
   listAlerts(
     journeyId: string,
     ownerRef: string,

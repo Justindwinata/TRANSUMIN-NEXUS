@@ -164,7 +164,6 @@ test('targeted SSE forwards owner and reconnect cursor, then parses heartbeat an
     let opened = 0;
     await passengerApi.streamAlerts(
       'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      'owner-a',
       'previous-event',
       new AbortController().signal,
       (event) => received.push(event),
@@ -177,7 +176,6 @@ test('targeted SSE forwards owner and reconnect cursor, then parses heartbeat an
       received.map((event) => event.type),
       ['heartbeat', 'journey.alert.created'],
     );
-    assert.equal(calls[0].options.headers['x-journey-owner'], 'owner-a');
     assert.equal(calls[0].options.headers['last-event-id'], 'previous-event');
   } finally {
     globalThis.fetch = originalFetch;

@@ -569,6 +569,24 @@ button:disabled {
 }
 .progress-actions {
   margin-top: 22px;
+  display: grid;
+  gap: 12px;
+}
+.progress-actions .current-leg {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: var(--canvas);
+}
+.progress-actions .current-leg p {
+  color: var(--text);
+  font-size: 0.92rem;
+  margin: 6px 0 2px;
+}
+.progress-actions .gps-consent {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 4px 12px 12px;
 }
 .progress-actions p {
   font-size: 0.85rem;

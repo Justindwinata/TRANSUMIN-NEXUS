@@ -7,7 +7,7 @@ import {
   WarningCircleIcon,
 } from '@phosphor-icons/react';
 import { useEffect, useState, type FormEvent } from 'react';
-import { passengerApi } from '../lib/passenger-api';
+import { PassengerApiError, passengerApi } from '../lib/passenger-api';
 import { DEMO_REPLAY } from '../lib/demo-replay';
 import { PlaceSearch } from './place-search';
 import { JourneyMap } from './journey-map';
@@ -39,9 +39,9 @@ import {
   type TransitPlace,
 } from '../lib/passenger';
 
-const ownerKey = 'transumin.passenger.owner';
 const journeyKey = 'transumin.passenger.journey';
 const recoveryKey = 'transumin.passenger.recovery';
+const activationKey = 'transumin.passenger.activation';
 
 function ModeIcon({ mode }: { mode: Journey['segments'][number]['mode'] }) {
   const Icon =
@@ -54,7 +54,6 @@ function ModeIcon({ mode }: { mode: Journey['segments'][number]['mode'] }) {
 }
 
 export function PassengerApp() {
-  const [owner, setOwner] = useState('');
   const [snapshotId, setSnapshotId] = useState('');
   const [originPlace, setOriginPlace] = useState<TransitPlace | null>(null);
   const [destinationPlace, setDestinationPlace] = useState<TransitPlace | null>(
@@ -78,24 +77,26 @@ export function PassengerApp() {
     'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'OFFLINE'
   >('OFFLINE');
   const [busy, setBusy] = useState<
-    'search' | 'activate' | 'progress' | 'recovery' | null
+    'search' | 'activate' | 'progress' | 'boarding' | 'alighting' | 'recovery' | null
   >(null);
+  const [gps, setGps] = useState<
+    | { state: 'OFF' }
+    | { state: 'REQUESTING' }
+    | { state: 'DENIED' }
+    | { state: 'UNAVAILABLE' }
+    | { state: 'ERROR'; detail: string }
+    | { state: 'READY'; latitude: number; longitude: number; accuracyMeters: number; at: string }
+  >({ state: 'OFF' });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
     setDeparture(initialJakartaDateTime());
     setProgressAt(initialJakartaDateTime());
-    let storedOwner = localStorage.getItem(ownerKey);
-    if (!storedOwner) {
-      storedOwner = `passenger:${crypto.randomUUID()}`;
-      localStorage.setItem(ownerKey, storedOwner);
-    }
-    setOwner(storedOwner);
     const storedJourney = localStorage.getItem(journeyKey);
     if (storedJourney) {
       void passengerApi
-        .getJourney(storedJourney, storedOwner)
+        .getJourney(storedJourney)
         .then((journey) => {
           setActive(journey);
           setSelected(journey);
@@ -104,14 +105,21 @@ export function PassengerApp() {
           );
           if (storedRecovery) {
             void passengerApi
-              .getRecovery(storedRecovery, storedOwner!)
+              .getRecovery(storedRecovery)
               .then(setRecovery)
               .catch(() => {
                 localStorage.removeItem(`${recoveryKey}.${journey.journey_id}`);
               });
           }
         })
-        .catch(() => localStorage.removeItem(journeyKey));
+        .catch((cause: unknown) => {
+          if (cause instanceof PassengerApiError && cause.status === 404) {
+            localStorage.removeItem(journeyKey);
+            setError('Perjalanan tersimpan tidak ditemukan. Silakan mulai lagi.');
+          } else {
+            setError(errorMessage(cause));
+          }
+        });
     }
     void passengerApi
       .config()
@@ -120,7 +128,7 @@ export function PassengerApp() {
   }, []);
 
   useEffect(() => {
-    if (!active || !owner || active.status !== 'ACTIVE') return;
+    if (!active || active.status !== 'ACTIVE') return;
     let mounted = true;
     const controller = new AbortController();
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -129,7 +137,7 @@ export function PassengerApp() {
     const journeyId = active.journey_id;
     const refresh = async () => {
       try {
-        const result = await passengerApi.alerts(journeyId, owner);
+        const result = await passengerApi.alerts(journeyId);
         if (mounted) {
           setAlerts(result);
           setAlertError('');
@@ -144,7 +152,6 @@ export function PassengerApp() {
       try {
         await passengerApi.streamAlerts(
           journeyId,
-          owner,
           lastEventId,
           controller.signal,
           (event) => {
@@ -186,7 +193,7 @@ export function PassengerApp() {
       controller.abort();
       if (reconnectTimer) clearTimeout(reconnectTimer);
     };
-  }, [active?.journey_id, active?.status, owner]);
+  }, [active?.journey_id, active?.status]);
 
   async function planJourney(
     origin: {
@@ -270,17 +277,22 @@ export function PassengerApp() {
   }
 
   async function activate() {
-    if (!selected || !owner) return;
+    if (!selected) return;
     setBusy('activate');
     setError('');
     setMessage('');
     try {
       const historical = Date.parse(selected.start_at) < Date.now() - 60_000;
+      const keyName = `${activationKey}.${selected.journey_id}`;
+      const attemptKey =
+        localStorage.getItem(keyName) ?? crypto.randomUUID();
+      localStorage.setItem(keyName, attemptKey);
       const journey = await passengerApi.activate(
         selected,
-        owner,
+        attemptKey,
         historical ? selected.start_at : undefined,
       );
+      localStorage.removeItem(keyName);
       setActive(journey);
       setSelected(journey);
       if (historical)
@@ -300,24 +312,20 @@ export function PassengerApp() {
     }
   }
 
-  async function completeNextLeg() {
-    if (!active || !owner) return;
-    const next = (active.progress?.completed_segment_count ?? 0) + 1;
-    if (next > active.segments.length) return;
-    setBusy('progress');
+  async function confirmBoarding() {
+    if (!active || currentLeg === null) return;
+    setBusy('boarding');
     setError('');
     try {
-      const updated = await passengerApi.progress(
+      const updated = await passengerApi.confirmBoarding(
         active.journey_id,
-        owner,
-        next,
-        active.segments.length,
+        currentLeg.sequence,
         toJakartaIso(progressAt),
       );
       setActive(updated);
       setSelected(updated);
       setMessage(
-        `${next} of ${updated.segments.length} journey parts marked complete.`,
+        `Naik dicatat pada bagian ${currentLeg.sequence + 1}: ${currentLeg.from.name}.`,
       );
     } catch (cause) {
       setError(errorMessage(cause));
@@ -326,8 +334,82 @@ export function PassengerApp() {
     }
   }
 
+  async function confirmAlighting() {
+    if (!active || currentLeg === null) return;
+    setBusy('alighting');
+    setError('');
+    try {
+      const alighted = await passengerApi.confirmAlighting(
+        active.journey_id,
+        currentLeg.sequence,
+        toJakartaIso(progressAt),
+      );
+      setActive(alighted);
+      setSelected(alighted);
+      setMessage(
+        `Turun dicatat pada bagian ${currentLeg.sequence + 1}: ${currentLeg.to.name}.`,
+      );
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function advanceLeg() {
+    if (!active) return;
+    const next = (active.progress?.completed_segment_count ?? 0) + 1;
+    if (next > active.segments.length) return;
+    setBusy('progress');
+    setError('');
+    try {
+      const updated = await passengerApi.progress(
+        active.journey_id,
+        next,
+        active.segments.length,
+        toJakartaIso(progressAt),
+      );
+      setActive(updated);
+      setSelected(updated);
+      setMessage(
+        updated.status === 'COMPLETED'
+          ? 'Perjalanan selesai.'
+          : `${next} dari ${updated.segments.length} bagian perjalanan selesai.`,
+      );
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function requestDeviceLocation() {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setGps({ state: 'UNAVAILABLE' });
+      return;
+    }
+    setGps({ state: 'REQUESTING' });
+    navigator.geolocation.getCurrentPosition(
+      (position) =>
+        setGps({
+          state: 'READY',
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracyMeters: position.coords.accuracy,
+          at: new Date(position.timestamp).toISOString(),
+        }),
+      (failure) =>
+        setGps(
+          failure.code === failure.PERMISSION_DENIED
+            ? { state: 'DENIED' }
+            : { state: 'ERROR', detail: failure.message },
+        ),
+      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 0 },
+    );
+  }
+
   async function proposeRecovery(alert: JourneyAlert) {
-    if (!active || !owner || !alertIsCurrent(alert)) return;
+    if (!active || !alertIsCurrent(alert)) return;
     setBusy('recovery');
     setError('');
     try {
@@ -341,7 +423,6 @@ export function PassengerApp() {
       const result = await passengerApi.recovery(
         active.journey_id,
         alert.impact_id,
-        owner,
         key,
         recoveryAt,
       );
@@ -366,6 +447,18 @@ export function PassengerApp() {
   const displayingActive =
     !!displayed && !!active && displayed.journey_id === active.journey_id;
   const completed = active?.progress?.completed_segment_count ?? 0;
+  const currentLeg =
+    displayingActive && active.status === 'ACTIVE'
+      ? (active.segments.find(
+          (segment) => segment.sequence === completed,
+        ) ?? null)
+      : null;
+  const boardedLeg = active?.progress?.boarding_confirmed_segment_sequence ?? null;
+  const alightedLeg = active?.progress?.alighting_confirmed_segment_sequence ?? null;
+  const journeyFinished = active?.status === 'COMPLETED';
+  const isTransitLeg = currentLeg !== null && currentLeg.mode !== 'WALK';
+  const currentBoarded = currentLeg !== null && boardedLeg === currentLeg.sequence;
+  const currentAlighted = currentLeg !== null && alightedLeg === currentLeg.sequence;
   const easiestIds = easiestAmongShown(alternatives);
   const currentAlerts = alerts.filter(alertIsCurrent);
   const historicalAlerts = alerts.filter((alert) => !alertIsCurrent(alert));
@@ -662,48 +755,154 @@ export function PassengerApp() {
                 <button
                   type="button"
                   className="primary-button full"
-                  disabled={busy !== null || !owner}
+                  disabled={busy !== null}
                   onClick={() => void activate()}
                 >
-                  {busy === 'activate' ? 'Starting...' : 'Start this journey'}
+                  {busy === 'activate' ? 'Memulai…' : 'Mulai Perjalanan'}
                 </button>
               )}
               {displayingActive && active && (
                 <div className="progress-actions">
                   <p>
                     {completed} of {active.segments.length} parts complete.
-                    Progress is manual.
+                    Progress is manual; device location is never used as proof.
                   </p>
-                  <label>
-                    Progress time (Jakarta, controlled)
-                    <input
-                      required
-                      type="datetime-local"
-                      value={progressAt}
-                      onChange={(event) => setProgressAt(event.target.value)}
-                      onInput={(event) =>
-                        setProgressAt(event.currentTarget.value)
-                      }
-                    />
-                  </label>
-                  <p className="fine-print">
-                    For a historical research journey, enter the actual
-                    controlled scenario time. This is not GPS or live tracking.
-                  </p>
-                  <button
-                    type="button"
-                    className="primary-button full"
-                    disabled={
-                      busy !== null || completed >= active.segments.length
-                    }
-                    onClick={() => void completeNextLeg()}
-                  >
-                    {busy === 'progress'
-                      ? 'Saving...'
-                      : completed >= active.segments.length
-                        ? 'Journey complete'
-                        : 'Mark current part complete'}
-                  </button>
+                  {journeyFinished ? (
+                    <p className="feedback" role="status">
+                      Selesaikan Perjalanan — perjalanan ini sudah selesai.
+                    </p>
+                  ) : (
+                    <>
+                      {currentLeg && (
+                        <div className="current-leg">
+                          <strong className="mode-symbol">
+                            <ModeIcon mode={currentLeg.mode} />
+                            {modeName(currentLeg.mode)}
+                            {passengerRouteName(currentLeg)
+                              ? ` ${passengerRouteName(currentLeg)}`
+                              : ''}
+                          </strong>
+                          <p>
+                            {currentLeg.from.name} <span>to</span>{' '}
+                            {currentLeg.to.name}
+                          </p>
+                          <small>
+                            {currentLeg.mode === 'WALK'
+                              ? 'Bagian jalan kaki · lanjutkan saat Anda sampai.'
+                              : currentBoarded
+                                ? `Naik tercatat di ${currentLeg.from.name}. Turun di ${currentLeg.to.name}.`
+                                : `Naik di ${currentLeg.from.name}, turun di ${currentLeg.to.name}.`}
+                          </small>
+                        </div>
+                      )}
+                      <label>
+                        Progress time (Jakarta, controlled)
+                        <input
+                          required
+                          type="datetime-local"
+                          value={progressAt}
+                          onChange={(event) => setProgressAt(event.target.value)}
+                          onInput={(event) =>
+                            setProgressAt(event.currentTarget.value)
+                          }
+                        />
+                      </label>
+                      <p className="fine-print">
+                        For a historical research journey, enter the actual
+                        controlled scenario time. This is not GPS or live
+                        tracking.
+                      </p>
+                      {isTransitLeg && !currentBoarded && (
+                        <button
+                          type="button"
+                          className="primary-button full"
+                          disabled={busy !== null}
+                          onClick={() => void confirmBoarding()}
+                        >
+                          {busy === 'boarding' ? 'Menyimpan…' : 'Saya Sudah Naik'}
+                        </button>
+                      )}
+                      {isTransitLeg && currentBoarded && !currentAlighted && (
+                        <button
+                          type="button"
+                          className="primary-button full"
+                          disabled={busy !== null}
+                          onClick={() => void confirmAlighting()}
+                        >
+                          {busy === 'alighting' ? 'Menyimpan…' : 'Saya Sudah Turun'}
+                        </button>
+                      )}
+                      {isTransitLeg && currentAlighted && (
+                        <button
+                          type="button"
+                          className="primary-button full"
+                          disabled={busy !== null || completed + 1 > active.segments.length}
+                          onClick={() => void advanceLeg()}
+                        >
+                          {busy === 'progress' ? 'Menyimpan…' : 'Lanjutkan Perjalanan'}
+                        </button>
+                      )}
+                      {!isTransitLeg && (
+                        <button
+                          type="button"
+                          className="primary-button full"
+                          disabled={busy !== null || completed >= active.segments.length}
+                          onClick={() => void advanceLeg()}
+                        >
+                          {busy === 'progress'
+                            ? 'Menyimpan…'
+                            : completed + 1 >= active.segments.length
+                              ? 'Selesaikan Perjalanan'
+                              : 'Lanjutkan Perjalanan'}
+                        </button>
+                      )}
+                      <details className="evidence-details gps-consent">
+                        <summary>Lokasi perangkat (opsional)</summary>
+                        <p>
+                          Lokasi perangkat tidak pernah menjadi bukti otomatis
+                          naik, turun, atau selesai. Anda tetap menandai
+                          perjalanan secara manual.
+                        </p>
+                        {gps.state === 'OFF' && (
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={requestDeviceLocation}
+                          >
+                            Bagikan lokasi perangkat sekali ini
+                          </button>
+                        )}
+                        {gps.state === 'REQUESTING' && <p>Meminta izin lokasi…</p>}
+                        {gps.state === 'DENIED' && (
+                          <p className="feedback error" role="alert">
+                            Izin lokasi ditolak. Lanjutkan menandai perjalanan
+                            secara manual.
+                          </p>
+                        )}
+                        {gps.state === 'UNAVAILABLE' && (
+                          <p className="fine-print">
+                            Peramban ini tidak mendukung lokasi perangkat.
+                            Gunakan penandaan manual.
+                          </p>
+                        )}
+                        {gps.state === 'ERROR' && (
+                          <p className="feedback error" role="alert">
+                            Lokasi tidak tersedia: {gps.detail}. Gunakan
+                            penandaan manual.
+                          </p>
+                        )}
+                        {gps.state === 'READY' && (
+                          <p className="fine-print">
+                            Lokasi perangkat: {gps.latitude.toFixed(5)},{' '}
+                            {gps.longitude.toFixed(5)} · akurasi ±
+                            {Math.round(gps.accuracyMeters)} m ·{' '}
+                            {formatClock(gps.at)}. Ini konteks saja, bukan
+                            posisi kendaraan.
+                          </p>
+                        )}
+                      </details>
+                    </>
+                  )}
                 </div>
               )}
             </>

@@ -53,42 +53,38 @@ export const passengerApi = {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  activate: (journey: Journey, owner: string, activatedAt?: string) =>
+  activate: (journey: Journey, idempotencyKey: string, activatedAt?: string) =>
     request<Journey>(`journeys/${journey.journey_id}/activate`, {
       method: 'POST',
-      headers: { 'x-journey-owner': owner },
+      headers: { 'idempotency-key': idempotencyKey },
       body: JSON.stringify({
         selected_journey: journey,
         ...(activatedAt ? { activated_at: activatedAt } : {}),
       }),
     }),
-  getJourney: (id: string, owner: string) =>
-    request<Journey>(`journeys/${id}`, {
-      headers: { 'x-journey-owner': owner },
-    }),
-  progress: (
-    id: string,
-    owner: string,
-    completed: number,
-    total: number,
-    recordedAt: string,
-  ) =>
+  getJourney: (id: string) => request<Journey>(`journeys/${id}`),
+  progress: (id: string, completed: number, total: number, recordedAt: string) =>
     request<Journey>(`journeys/${id}/progress`, {
       method: 'PATCH',
-      headers: { 'x-journey-owner': owner },
       body: JSON.stringify({
         completed_segment_count: completed,
         current_segment_sequence: completed < total ? completed : null,
         recorded_at: recordedAt,
       }),
     }),
-  alerts: (id: string, owner: string) =>
-    request<JourneyAlert[]>(`journeys/${id}/alerts`, {
-      headers: { 'x-journey-owner': owner },
+  confirmBoarding: (id: string, leg: number, confirmedAt: string) =>
+    request<Journey>(`journeys/${id}/boarding/${leg}`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed_at: confirmedAt }),
     }),
+  confirmAlighting: (id: string, leg: number, confirmedAt: string) =>
+    request<Journey>(`journeys/${id}/alighting/${leg}`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed_at: confirmedAt }),
+    }),
+  alerts: (id: string) => request<JourneyAlert[]>(`journeys/${id}/alerts`),
   streamAlerts: async (
     id: string,
-    owner: string,
     lastEventId: string | null,
     signal: AbortSignal,
     onEvent: (event: { id: string | null; type: string }) => void,
@@ -99,7 +95,6 @@ export const passengerApi = {
       {
         headers: {
           accept: 'text/event-stream',
-          'x-journey-owner': owner,
           ...(lastEventId ? { 'last-event-id': lastEventId } : {}),
         },
         cache: 'no-store',
@@ -154,20 +149,11 @@ export const passengerApi = {
       reader.releaseLock();
     }
   },
-  getRecovery: (id: string, owner: string) =>
-    request<Recovery>(`recoveries/${id}`, {
-      headers: { 'x-journey-owner': owner },
-    }),
-  recovery: (
-    journeyId: string,
-    impactId: string,
-    owner: string,
-    key: string,
-    recoveryAt: string,
-  ) =>
+  getRecovery: (id: string) => request<Recovery>(`recoveries/${id}`),
+  recovery: (journeyId: string, impactId: string, key: string, recoveryAt: string) =>
     request<Recovery>('recoveries', {
       method: 'POST',
-      headers: { 'x-journey-owner': owner, 'idempotency-key': key },
+      headers: { 'idempotency-key': key },
       body: JSON.stringify({
         original_journey_id: journeyId,
         impact_id: impactId,

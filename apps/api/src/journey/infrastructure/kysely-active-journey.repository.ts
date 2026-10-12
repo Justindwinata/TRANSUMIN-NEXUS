@@ -40,6 +40,10 @@ type JourneyRow = Readonly<{
   progressMethod: 'CONTROLLED_MANUAL';
   recordedAt: Date;
   revision: number;
+  boardingConfirmedLegSequence: number | null;
+  boardingConfirmedAt: Date | null;
+  alightingConfirmedLegSequence: number | null;
+  alightingConfirmedAt: Date | null;
 }>;
 
 type DependencyRow = Readonly<{
@@ -84,9 +88,35 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
   ) {}
 
   async activate(input: ActivateJourneyInput): Promise<ActiveJourney> {
+    let resolvedId = input.journeyId;
     await this.database.transaction().execute(async (transaction) => {
       const journey = input.selectedJourney;
       const activeId = input.journeyId;
+      const receiptKey =
+        input.idempotencyKey !== undefined && input.requestFingerprint !== undefined
+          ? { idempotencyKey: input.idempotencyKey, requestFingerprint: input.requestFingerprint }
+          : undefined;
+      if (receiptKey !== undefined) {
+        // Serialize identical activation retries; the loser replays the winner's instance.
+        await sql`
+          select pg_advisory_xact_lock(hashtext(${`${input.ownerRef}:${receiptKey.idempotencyKey}`}))
+        `.execute(transaction);
+        const existing = await sql<{ activeJourneyId: string; requestFingerprint: string }>`
+          select active_journey_id as "activeJourneyId", request_fingerprint as "requestFingerprint"
+          from journey.activation_receipt
+          where owner_ref=${input.ownerRef} and idempotency_key=${receiptKey.idempotencyKey}
+        `.execute(transaction);
+        const row = existing.rows[0];
+        if (row !== undefined) {
+          if (row.requestFingerprint !== receiptKey.requestFingerprint)
+            throw new ActiveJourneyError(
+              'ACTIVATION_CONFLICT',
+              'Activation idempotency key belongs to different plan content.',
+            );
+          resolvedId = row.activeJourneyId;
+          return;
+        }
+      }
       const inserted = await sql<{ id: string }>`
         insert into journey.journey_plan (
           id, owner_ref, plan_fingerprint, original_plan_json,
@@ -175,8 +205,17 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
         input.activatedAt,
         { planFingerprint: input.planFingerprint },
       );
+      if (receiptKey !== undefined)
+        await sql`
+          insert into journey.activation_receipt (
+            owner_ref, idempotency_key, request_fingerprint, active_journey_id
+          ) values (
+            ${input.ownerRef}, ${receiptKey.idempotencyKey},
+            ${receiptKey.requestFingerprint}, ${activeId}::uuid
+          )
+        `.execute(transaction);
     });
-    return this.get(input.journeyId, input.ownerRef);
+    return this.get(resolvedId, input.ownerRef);
   }
 
   async get(journeyId: string, ownerRef: string): Promise<ActiveJourney> {
@@ -187,7 +226,11 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
         a.completed_at as "completedAt", pr.completed_leg_count as "completedLegCount",
         pr.current_leg_sequence as "currentLegSequence",
         pr.progress_method as "progressMethod", pr.recorded_at as "recordedAt",
-        pr.revision
+        pr.revision,
+        pr.boarding_confirmed_leg_sequence as "boardingConfirmedLegSequence",
+        pr.boarding_confirmed_at as "boardingConfirmedAt",
+        pr.alighting_confirmed_leg_sequence as "alightingConfirmedLegSequence",
+        pr.alighting_confirmed_at as "alightingConfirmedAt"
       from journey.journey_plan p
       join journey.active_journey a on a.journey_id=p.id
       join journey.journey_progress pr on pr.journey_id=p.id
@@ -218,6 +261,10 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
         method: row.progressMethod,
         recordedAt: row.recordedAt.toISOString(),
         revision: row.revision,
+        boardingConfirmedLegSequence: row.boardingConfirmedLegSequence,
+        boardingConfirmedAt: row.boardingConfirmedAt?.toISOString() ?? null,
+        alightingConfirmedLegSequence: row.alightingConfirmedLegSequence,
+        alightingConfirmedAt: row.alightingConfirmedAt?.toISOString() ?? null,
       },
       dependencies: await this.dependencies(journeyId),
     };
@@ -231,12 +278,16 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
         completedLegCount: number;
         currentLegSequence: number | null;
         recordedAt: Date;
+        boardingConfirmedLegSequence: number | null;
+        alightingConfirmedLegSequence: number | null;
         legCount: number;
       }>`
         select p.owner_ref as "ownerRef", a.lifecycle_status as status,
           pr.completed_leg_count as "completedLegCount",
           pr.current_leg_sequence as "currentLegSequence",
           pr.recorded_at as "recordedAt",
+          pr.boarding_confirmed_leg_sequence as "boardingConfirmedLegSequence",
+          pr.alighting_confirmed_leg_sequence as "alightingConfirmedLegSequence",
           (select count(*)::int from journey.journey_leg l
             where l.journey_id=p.id) as "legCount"
         from journey.journey_plan p
@@ -267,7 +318,7 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
         Date.parse(input.recordedAt) < row.recordedAt.getTime() ||
         (input.completedLegCount < row.legCount &&
           (input.currentLegSequence === null ||
-            input.currentLegSequence >= row.legCount)) ||
+            input.currentLegSequence !== input.completedLegCount)) ||
         (input.completedLegCount === row.legCount &&
           input.currentLegSequence !== null)
       )
@@ -275,6 +326,21 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
           'INVALID_PROGRESS',
           'Progress must be monotonic and remain within the immutable leg sequence.',
         );
+      // Transit leg cannot be marked completed before explicit alighting for that leg.
+      if (input.completedLegCount > row.completedLegCount) {
+        const transitToComplete =
+          await sql<{ sequence: number }>`select sequence from journey.journey_leg
+            where journey_id=${input.journeyId}::uuid
+              and sequence >= ${row.completedLegCount}
+              and sequence < ${input.completedLegCount}
+              and mode <> 'WALK'`.execute(transaction);
+        for (const leg of transitToComplete.rows)
+          if (row.alightingConfirmedLegSequence === null || leg.sequence !== row.alightingConfirmedLegSequence)
+            throw new ActiveJourneyError(
+              'INVALID_PROGRESS',
+              'Transit progress requires alighting confirmation for the completed leg.',
+            );
+      }
       const unchanged =
         input.completedLegCount === row.completedLegCount &&
         input.currentLegSequence === row.currentLegSequence &&
@@ -305,6 +371,139 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
           currentLegSequence: input.currentLegSequence,
         },
       );
+    });
+    return this.get(input.journeyId, input.ownerRef);
+  }
+
+  async confirmBoarding(input: Readonly<{ journeyId: string; ownerRef: string; legSequence: number; confirmedAt: string }>): Promise<ActiveJourney> {
+    await this.database.transaction().execute(async (transaction) => {
+      const current = await sql<{
+        ownerRef: string;
+        status: ActiveJourney['lifecycleStatus'];
+        completedLegCount: number;
+        currentLegSequence: number | null;
+        recordedAt: Date;
+        boardingConfirmedLegSequence: number | null;
+        boardingConfirmedAt: Date | null;
+        alightingConfirmedLegSequence: number | null;
+        legCount: number;
+        mode: string | null;
+      }>`
+        select p.owner_ref as "ownerRef", a.lifecycle_status as status,
+          pr.completed_leg_count as "completedLegCount",
+          pr.current_leg_sequence as "currentLegSequence",
+          pr.recorded_at as "recordedAt",
+          pr.boarding_confirmed_leg_sequence as "boardingConfirmedLegSequence",
+          pr.boarding_confirmed_at as "boardingConfirmedAt",
+          pr.alighting_confirmed_leg_sequence as "alightingConfirmedLegSequence",
+          (select count(*)::int from journey.journey_leg l where l.journey_id=p.id) as "legCount",
+          (select mode from journey.journey_leg l where l.journey_id=p.id and l.sequence=${input.legSequence} limit 1) as "mode"
+        from journey.journey_plan p
+        join journey.active_journey a on a.journey_id=p.id
+        join journey.journey_progress pr on pr.journey_id=p.id
+        where p.id=${input.journeyId}::uuid
+        for update of a, pr
+      `.execute(transaction);
+      const row = current.rows[0];
+      if (row === undefined) throw new ActiveJourneyError('JOURNEY_NOT_FOUND', 'Active journey not found.');
+      if (row.ownerRef !== input.ownerRef) throw new ActiveJourneyError('OWNER_SCOPE_MISMATCH', 'Journey owner scope mismatch.');
+      if (row.status !== 'ACTIVE') throw new ActiveJourneyError('JOURNEY_NOT_ACTIVE', 'Only an ACTIVE journey can be boarded.');
+      if (row.mode === null) throw new ActiveJourneyError('INVALID_BOARDING', 'Leg does not exist.');
+      if (row.mode === 'WALK') throw new ActiveJourneyError('INVALID_BOARDING', 'Cannot board a walking leg; walking is not vehicle boarding.');
+      // Ensure monotonic confirmedAt regardless of current DB timestamp (avoid client clock skew).
+      // ponytail: no request-scoped idempotency key; retries matched by identical timestamp.
+      if (
+        row.boardingConfirmedLegSequence === input.legSequence &&
+        row.boardingConfirmedAt !== null &&
+        row.boardingConfirmedAt.toISOString() === new Date(input.confirmedAt).toISOString()
+      )
+        return;
+      if (row.boardingConfirmedLegSequence === input.legSequence)
+        throw new ActiveJourneyError('INVALID_BOARDING', 'This leg is already boarded.');
+      if (input.legSequence < row.completedLegCount) throw new ActiveJourneyError('INVALID_BOARDING', 'Cannot board a completed leg.');
+      if (input.legSequence !== row.currentLegSequence) throw new ActiveJourneyError('INVALID_BOARDING', 'Boarding is valid only for the current leg.');
+      if (Date.parse(input.confirmedAt) < row.recordedAt.getTime()) throw new ActiveJourneyError('INVALID_PROGRESS', 'Boarding confirmation cannot be older than journey progress.');
+      // Multi-leg enforcement: require alighting of prior boarded leg before boarding next leg.
+      if (
+        row.boardingConfirmedLegSequence !== null &&
+        row.alightingConfirmedLegSequence !== row.boardingConfirmedLegSequence
+      )
+        throw new ActiveJourneyError('INVALID_BOARDING', 'Alight the previously boarded leg before boarding another leg.');
+      if (row.alightingConfirmedLegSequence !== null && input.legSequence <= row.alightingConfirmedLegSequence)
+        throw new ActiveJourneyError('INVALID_BOARDING', 'Cannot re-board an already exited leg.');
+      await sql`
+        update journey.journey_progress set
+          boarding_confirmed_leg_sequence=${input.legSequence},
+          boarding_confirmed_at=${input.confirmedAt}::timestamptz,
+          recorded_at=${input.confirmedAt}::timestamptz,
+          revision=revision+1, updated_at=now()
+        where journey_id=${input.journeyId}::uuid
+      `.execute(transaction);
+      await this.insertStateEvent(transaction, input.journeyId, 'BOARDED', input.confirmedAt, {
+        legSequence: input.legSequence,
+      });
+    });
+    return this.get(input.journeyId, input.ownerRef);
+  }
+
+  async confirmAlighting(input: Readonly<{ journeyId: string; ownerRef: string; legSequence: number; confirmedAt: string }>): Promise<ActiveJourney> {
+    await this.database.transaction().execute(async (transaction) => {
+      const current = await sql<{
+        ownerRef: string;
+        status: ActiveJourney['lifecycleStatus'];
+        completedLegCount: number;
+        currentLegSequence: number | null;
+        recordedAt: Date;
+        boardingConfirmedLegSequence: number | null;
+        alightingConfirmedLegSequence: number | null;
+        alightingConfirmedAt: Date | null;
+        mode: string | null;
+        legCount: number;
+      }>`
+        select p.owner_ref as "ownerRef", a.lifecycle_status as status,
+          pr.completed_leg_count as "completedLegCount",
+          pr.current_leg_sequence as "currentLegSequence",
+          pr.recorded_at as "recordedAt",
+          pr.boarding_confirmed_leg_sequence as "boardingConfirmedLegSequence",
+          pr.alighting_confirmed_leg_sequence as "alightingConfirmedLegSequence",
+          pr.alighting_confirmed_at as "alightingConfirmedAt",
+          (select mode from journey.journey_leg l where l.journey_id=p.id and l.sequence=${input.legSequence} limit 1) as "mode",
+          (select count(*)::int from journey.journey_leg l where l.journey_id=p.id) as "legCount"
+        from journey.journey_plan p
+        join journey.active_journey a on a.journey_id=p.id
+        join journey.journey_progress pr on pr.journey_id=p.id
+        where p.id=${input.journeyId}::uuid
+        for update of a, pr
+      `.execute(transaction);
+      const row = current.rows[0];
+      if (row === undefined) throw new ActiveJourneyError('JOURNEY_NOT_FOUND', 'Active journey not found.');
+      if (row.ownerRef !== input.ownerRef) throw new ActiveJourneyError('OWNER_SCOPE_MISMATCH', 'Journey owner scope mismatch.');
+      if (row.status !== 'ACTIVE') throw new ActiveJourneyError('JOURNEY_NOT_ACTIVE', 'Only an ACTIVE journey can be exited.');
+      if (row.mode === null) throw new ActiveJourneyError('INVALID_BOARDING', 'Leg does not exist.');
+      if (row.mode === 'WALK') throw new ActiveJourneyError('INVALID_BOARDING', 'Cannot record alighting for a walking leg.');
+      if (row.boardingConfirmedLegSequence !== input.legSequence)
+        throw new ActiveJourneyError('INVALID_BOARDING', 'Alighting requires boarding for the same leg first.');
+      if (Date.parse(input.confirmedAt) < row.recordedAt.getTime()) throw new ActiveJourneyError('INVALID_PROGRESS', 'Alighting cannot be older than journey progress.');
+      const unchanged =
+        row.alightingConfirmedLegSequence === input.legSequence &&
+        row.alightingConfirmedAt !== null &&
+        row.alightingConfirmedAt.toISOString() === new Date(input.confirmedAt).toISOString();
+      if (unchanged) return;
+      if (row.alightingConfirmedLegSequence === input.legSequence)
+        throw new ActiveJourneyError('INVALID_BOARDING', 'This leg is already exited.');
+      if (input.legSequence !== row.currentLegSequence || input.legSequence < row.completedLegCount)
+        throw new ActiveJourneyError('INVALID_BOARDING', 'Alighting is valid only for the current leg.');
+      await sql`
+        update journey.journey_progress set
+          alighting_confirmed_leg_sequence=${input.legSequence},
+          alighting_confirmed_at=${input.confirmedAt}::timestamptz,
+          recorded_at=${input.confirmedAt}::timestamptz,
+          revision=revision+1, updated_at=now()
+        where journey_id=${input.journeyId}::uuid
+      `.execute(transaction);
+      await this.insertStateEvent(transaction, input.journeyId, 'ALIGHTED', input.confirmedAt, {
+        legSequence: input.legSequence,
+      });
     });
     return this.get(input.journeyId, input.ownerRef);
   }

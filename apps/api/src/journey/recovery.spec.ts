@@ -279,6 +279,10 @@ function activeJourney(): ActiveJourney {
       method: 'CONTROLLED_MANUAL',
       recordedAt: '2026-10-02T08:10:00+07:00',
       revision: 2,
+      boardingConfirmedLegSequence: null,
+      boardingConfirmedAt: null,
+      alightingConfirmedLegSequence: null,
+      alightingConfirmedAt: null,
     },
     dependencies: [],
   };

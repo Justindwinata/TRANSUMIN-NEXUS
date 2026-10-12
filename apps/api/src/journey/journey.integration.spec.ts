@@ -96,74 +96,8 @@ describe('RUN 5A persistent active-journey targeting', () => {
 
   after(async () => {
     impacts.onModuleDestroy();
-    await sql`delete from journey.targeted_alert where journey_id in (${activeIds.journeyA}::uuid, ${activeIds.journeyB}::uuid, ${activeIds.journeyC}::uuid, ${activeIds.journeyD}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from journey.journey_impact_dependency where impact_id in (select id from journey.journey_impact where journey_id in (${activeIds.journeyA}::uuid, ${activeIds.journeyB}::uuid, ${activeIds.journeyC}::uuid, ${activeIds.journeyD}::uuid))`.execute(
-      database,
-    );
-    await sql`delete from journey.journey_impact where journey_id in (${activeIds.journeyA}::uuid, ${activeIds.journeyB}::uuid, ${activeIds.journeyC}::uuid, ${activeIds.journeyD}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from journey.journey_state_event where journey_id in (${activeIds.journeyA}::uuid, ${activeIds.journeyB}::uuid, ${activeIds.journeyC}::uuid, ${activeIds.journeyD}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from journey.journey_progress where journey_id in (${activeIds.journeyA}::uuid, ${activeIds.journeyB}::uuid, ${activeIds.journeyC}::uuid, ${activeIds.journeyD}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from journey.active_journey where journey_id in (${activeIds.journeyA}::uuid, ${activeIds.journeyB}::uuid, ${activeIds.journeyC}::uuid, ${activeIds.journeyD}::uuid)`.execute(
-      database,
-    );
-    for (const table of ['journey_dependency', 'journey_leg', 'journey_plan'])
-      await sql
-        .raw(`alter table journey.${table} disable trigger ${table}_immutable`)
-        .execute(database);
-    await sql`delete from journey.journey_dependency where journey_id in (${activeIds.journeyA}::uuid, ${activeIds.journeyB}::uuid, ${activeIds.journeyC}::uuid, ${activeIds.journeyD}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from journey.journey_leg where journey_id in (${activeIds.journeyA}::uuid, ${activeIds.journeyB}::uuid, ${activeIds.journeyC}::uuid, ${activeIds.journeyD}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from journey.journey_plan where id in (${activeIds.journeyA}::uuid, ${activeIds.journeyB}::uuid, ${activeIds.journeyC}::uuid, ${activeIds.journeyD}::uuid)`.execute(
-      database,
-    );
-    for (const table of ['journey_dependency', 'journey_leg', 'journey_plan'])
-      await sql
-        .raw(`alter table journey.${table} enable trigger ${table}_immutable`)
-        .execute(database);
-    await sql`delete from twin.mobility_state_history where mobility_entity_id in (${ids.affectedEntity}::uuid, ${ids.unrelatedEntity}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from twin.mobility_state where mobility_entity_id in (${ids.affectedEntity}::uuid, ${ids.unrelatedEntity}::uuid)`.execute(
-      database,
-    );
-    await sql`alter table twin.operational_observation disable trigger operational_observation_append_only`.execute(
-      database,
-    );
-    await sql`delete from twin.operational_observation where mobility_entity_id in (${ids.affectedEntity}::uuid, ${ids.unrelatedEntity}::uuid)`.execute(
-      database,
-    );
-    await sql`alter table twin.operational_observation enable trigger operational_observation_append_only`.execute(
-      database,
-    );
-    await sql`alter table twin.network_snapshot disable trigger network_snapshot_immutable_update`.execute(
-      database,
-    );
-    await sql`delete from twin.network_snapshot where id=${ids.snapshot}::uuid`.execute(
-      database,
-    );
-    await sql`alter table twin.network_snapshot enable trigger network_snapshot_immutable_update`.execute(
-      database,
-    );
-    await sql`delete from twin.mobility_entity where id in (${ids.affectedEntity}::uuid, ${ids.unrelatedEntity}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from meta.dataset_version where id=${ids.version}::uuid`.execute(
-      database,
-    );
-    await sql`delete from meta.dataset_source where id=${ids.source}::uuid`.execute(
-      database,
-    );
+    // Immutable evidence remains until invocation-owned scratch DB disposal.
+    // Never disable integrity triggers to clean up test records.
     await database.destroy();
   });
 
@@ -221,6 +155,18 @@ describe('RUN 5A persistent active-journey targeting', () => {
     await assert.rejects(journeys.get(activeD.journeyId, 'session-a'));
     assert.equal(activeA.dependencies.length, 2);
 
+    await journeys.confirmBoarding({
+      journeyId: activeIds.journeyA,
+      ownerRef: 'session-a',
+      legSequence: 0,
+      confirmedAt: activatedAt,
+    });
+    await journeys.confirmAlighting({
+      journeyId: activeIds.journeyA,
+      ownerRef: 'session-a',
+      legSequence: 0,
+      confirmedAt: activatedAt,
+    });
     const progressed = await journeys.updateProgress({
       journeyId: activeIds.journeyA,
       ownerRef: 'session-a',
@@ -356,6 +302,18 @@ describe('RUN 5A persistent active-journey targeting', () => {
     assert.equal(disruptedAlerts.length, 4);
     assert.equal(disruptedAlerts[3]?.alertType, 'DISRUPTION');
 
+    await journeys.confirmBoarding({
+      journeyId: activeIds.journeyB,
+      ownerRef: 'session-b',
+      legSequence: 0,
+      confirmedAt: new Date(Date.parse(activatedAt) + 1000).toISOString(),
+    });
+    await journeys.confirmAlighting({
+      journeyId: activeIds.journeyB,
+      ownerRef: 'session-b',
+      legSequence: 0,
+      confirmedAt: new Date(Date.parse(activatedAt) + 1000).toISOString(),
+    });
     const completed = await journeys.updateProgress({
       journeyId: activeIds.journeyB,
       ownerRef: 'session-b',
@@ -365,6 +323,18 @@ describe('RUN 5A persistent active-journey targeting', () => {
     });
     assert.equal(completed.lifecycleStatus, 'COMPLETED');
     assert.deepEqual(completed.originalPlan, planB);
+    await journeys.confirmBoarding({
+      journeyId: activeIds.journeyD,
+      ownerRef: 'session-d',
+      legSequence: 0,
+      confirmedAt: new Date(Date.parse(activatedAt) + 1000).toISOString(),
+    });
+    await journeys.confirmAlighting({
+      journeyId: activeIds.journeyD,
+      ownerRef: 'session-d',
+      legSequence: 0,
+      confirmedAt: new Date(Date.parse(activatedAt) + 1000).toISOString(),
+    });
     await journeys.updateProgress({
       journeyId: activeIds.journeyD,
       ownerRef: 'session-d',

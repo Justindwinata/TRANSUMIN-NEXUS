@@ -246,6 +246,8 @@ export interface paths {
             header: {
                 /** @description Bounded opaque owner/session reference; not passenger PII. */
                 "x-journey-owner": components["parameters"]["JourneyOwner"];
+                /** @description Logical activation idempotency key; retries with the same key and equivalent plan replay one server-generated instance. */
+                "Idempotency-Key": components["parameters"]["ActivationIdempotencyKey"];
             };
             path: {
                 journeyId: components["parameters"]["JourneyId"];
@@ -254,7 +256,54 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Creates a new owner-scoped active journey instance. The Idempotency-Key identifies one logical activation; retries with the same key and equivalent plan return the same instance, while a different plan body under the same key is a 409 conflict. */
         post: operations["activateJourney"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/journeys/{journeyId}/boarding/{legSequence}": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                journeyId: components["parameters"]["JourneyId"];
+                legSequence: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Explicit passenger boarding confirmation for the current non-walking leg. Confirmation must never be derived from device GPS. */
+        post: operations["confirmLegBoarding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/journeys/{journeyId}/alighting/{legSequence}": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                journeyId: components["parameters"]["JourneyId"];
+                legSequence: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Explicit passenger alighting confirmation after boarding for the same non-walking leg. Confirmation must never be derived from device GPS. */
+        post: operations["confirmLegAlighting"];
         delete?: never;
         options?: never;
         head?: never;
@@ -910,6 +959,10 @@ export interface components {
             /** Format: date-time */
             activated_at?: string;
         };
+        JourneyConfirmationRequest: {
+            /** Format: date-time */
+            confirmed_at: string;
+        };
         JourneyProgressRequest: {
             completed_segment_count: number;
             current_segment_sequence?: number;
@@ -925,6 +978,12 @@ export interface components {
             /** Format: date-time */
             recorded_at: string;
             revision: number;
+            boarding_confirmed_segment_sequence: number | null;
+            /** Format: date-time */
+            boarding_confirmed_at: string | null;
+            alighting_confirmed_segment_sequence: number | null;
+            /** Format: date-time */
+            alighting_confirmed_at: string | null;
         };
         JourneyDependency: {
             dependency_id: components["schemas"]["Uuid"];
@@ -1318,6 +1377,8 @@ export interface components {
         RecoveryId: components["schemas"]["Uuid"];
         AnalysisId: components["schemas"]["Uuid"];
         IdempotencyKey: string;
+        /** @description Logical activation idempotency key; retries with the same key and equivalent plan replay one server-generated instance. */
+        ActivationIdempotencyKey: string;
     };
     requestBodies: never;
     headers: never;
@@ -1593,6 +1654,8 @@ export interface operations {
             header: {
                 /** @description Bounded opaque owner/session reference; not passenger PII. */
                 "x-journey-owner": components["parameters"]["JourneyOwner"];
+                /** @description Logical activation idempotency key; retries with the same key and equivalent plan replay one server-generated instance. */
+                "Idempotency-Key": components["parameters"]["ActivationIdempotencyKey"];
             };
             path: {
                 journeyId: components["parameters"]["JourneyId"];
@@ -1607,6 +1670,52 @@ export interface operations {
         responses: {
             200: components["responses"]["JourneyResponse"];
             409: components["responses"]["ErrorResponse"];
+        };
+    };
+    confirmLegBoarding: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                journeyId: components["parameters"]["JourneyId"];
+                legSequence: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JourneyConfirmationRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["JourneyResponse"];
+            400: components["responses"]["ErrorResponse"];
+        };
+    };
+    confirmLegAlighting: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                journeyId: components["parameters"]["JourneyId"];
+                legSequence: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JourneyConfirmationRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["JourneyResponse"];
+            400: components["responses"]["ErrorResponse"];
         };
     };
     updateJourneyProgress: {

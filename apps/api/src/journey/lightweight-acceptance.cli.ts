@@ -90,6 +90,17 @@ try {
     before > reserveBytes,
     `Lightweight acceptance rejected: Docker free space ${before}B below 1 GiB reserve`,
   );
+  const systemIdentifier = await admin.query<{ system_identifier: string }>(
+    'select system_identifier::text from pg_control_system()',
+  );
+  const dockerIdentifier = execFileSync(
+    'docker',
+    ['exec', container, 'psql', '-U', user, '-d', 'postgres', '-Atc',
+      'select system_identifier::text from pg_control_system()'],
+    { encoding: 'utf8' },
+  ).trim();
+  assert.equal(systemIdentifier.rows[0]?.system_identifier, dockerIdentifier,
+    'Endpoint differs from authorized product Docker server');
   const sourceIdentity = await admin.query<{
     current_user: string;
     address: string;
@@ -141,6 +152,7 @@ try {
       'tsx',
       '--test',
       'src/journey/journey.integration.spec.ts',
+      'src/journey/active-journey-boarding.spec.ts',
     ],
     { ...process.env, DATABASE_URL: url },
   );

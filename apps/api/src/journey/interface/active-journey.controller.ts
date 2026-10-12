@@ -45,15 +45,19 @@ export class ActiveJourneyController {
   async activate(
     @Param('journeyId') journeyId: string,
     @Headers('x-journey-owner') ownerRef: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body() body: { selected_journey?: unknown; activated_at?: string },
   ): Promise<Record<string, unknown>> {
     try {
       const owner = requiredOwner(ownerRef);
       const selected = parseSelectedJourney(body.selected_journey, journeyId);
+      if (!idempotencyKey || !/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyKey))
+        throw new BadRequestException('Valid Idempotency-Key is required.');
       const active = await this.journeys.activate({
         ownerRef: owner,
         selectedJourney: selected,
         activatedAt: body.activated_at,
+        idempotencyKey,
       });
       return envelope(mapActiveJourney(active));
     } catch (error) {
@@ -102,6 +106,64 @@ export class ActiveJourneyController {
             completedLegCount: body.completed_segment_count,
             currentLegSequence: body.current_segment_sequence ?? null,
             recordedAt: body.recorded_at,
+          }),
+        ),
+      );
+    } catch (error) {
+      throw mapActiveJourneyError(error);
+    }
+  }
+
+  @Post(':journeyId/boarding/:legSequence')
+  async boarding(
+    @Param('journeyId') journeyId: string,
+    @Param('legSequence') legSequence: string,
+    @Headers('x-journey-owner') ownerRef: string | undefined,
+    @Body() body: { confirmed_at?: unknown },
+  ): Promise<Record<string, unknown>> {
+    const sequence = Number(legSequence);
+    if (!Number.isInteger(sequence) || sequence < 0)
+      throw new BadRequestException('legSequence must be a non-negative integer.');
+    if (body.confirmed_at === undefined)
+      throw new BadRequestException('confirmed_at is required.');
+    const confirmedAt = timestamp(body.confirmed_at, 'confirmed_at');
+    try {
+      return envelope(
+        mapActiveJourney(
+          await this.journeys.confirmBoarding({
+            journeyId,
+            ownerRef: requiredOwner(ownerRef),
+            legSequence: sequence,
+            confirmedAt,
+          }),
+        ),
+      );
+    } catch (error) {
+      throw mapActiveJourneyError(error);
+    }
+  }
+
+  @Post(':journeyId/alighting/:legSequence')
+  async alighting(
+    @Param('journeyId') journeyId: string,
+    @Param('legSequence') legSequence: string,
+    @Headers('x-journey-owner') ownerRef: string | undefined,
+    @Body() body: { confirmed_at?: unknown },
+  ): Promise<Record<string, unknown>> {
+    const sequence = Number(legSequence);
+    if (!Number.isInteger(sequence) || sequence < 0)
+      throw new BadRequestException('legSequence must be a non-negative integer.');
+    if (body.confirmed_at === undefined)
+      throw new BadRequestException('confirmed_at is required.');
+    const confirmedAt = timestamp(body.confirmed_at, 'confirmed_at');
+    try {
+      return envelope(
+        mapActiveJourney(
+          await this.journeys.confirmAlighting({
+            journeyId,
+            ownerRef: requiredOwner(ownerRef),
+            legSequence: sequence,
+            confirmedAt,
           }),
         ),
       );
@@ -206,6 +268,12 @@ function mapProgress(journey: ActiveJourney) {
     method: journey.progress.method,
     recorded_at: journey.progress.recordedAt,
     revision: journey.progress.revision,
+    boarding_confirmed_segment_sequence:
+      journey.progress.boardingConfirmedLegSequence,
+    boarding_confirmed_at: journey.progress.boardingConfirmedAt,
+    alighting_confirmed_segment_sequence:
+      journey.progress.alightingConfirmedLegSequence,
+    alighting_confirmed_at: journey.progress.alightingConfirmedAt,
   };
 }
 
@@ -445,6 +513,13 @@ function point(value: unknown, field: string): GeoPoint {
     latitude: number(item.latitude, `${field}.latitude`),
     longitude: number(item.longitude, `${field}.longitude`),
   };
+}
+
+function timestamp(value: unknown, field: string): string {
+  const parsed = string(value, field);
+  if (!Number.isFinite(Date.parse(parsed)))
+    throw new BadRequestException(`${field} must be an ISO date-time.`);
+  return parsed;
 }
 
 function requiredOwner(value: string | undefined): string {
