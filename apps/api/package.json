@@ -39,6 +39,7 @@
     "data:phase5b:verify": "tsx src/journey/recovery-acceptance.cli.ts verify",
     "data:product-p1:verify": "tsx src/journey/product-p1-acceptance.cli.ts",
     "data:product-acceptance": "tsx src/journey/product-acceptance.cli.ts",
+    "data:lightweight-acceptance": "tsx src/journey/lightweight-acceptance.cli.ts",
     "data:product-p1r:serve": "tsx src/journey/product-p1r-browser.cli.ts",
     "data:demo:seed": "tsx src/journey/demo-database-lifecycle.cli.ts seed",
     "demo:present": "tsx src/journey/demo-database-lifecycle.cli.ts present",
