@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { Pool } from 'pg';
 
+import { runNodeTests } from './node-test-child-runner.js';
+
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
+const reporter = fileURLToPath(
+  new URL('./acceptance-test-reporter.mjs', import.meta.url),
+);
 try {
   loadEnvFile(`${root}.env`);
 } catch {
@@ -22,6 +27,7 @@ const database = `tnx_lightweight_${id.replaceAll('-', '')}`;
 const marker = `tnx_lightweight:${id}`;
 const container = 'transum-in-nexus-postgres-1';
 const reserveBytes = 1024 ** 3;
+const timeout = 120_000;
 
 assert(user && password, 'POSTGRES_USER and POSTGRES_PASSWORD are required');
 assert(
@@ -58,19 +64,11 @@ function run(
   args: string[],
   environment: NodeJS.ProcessEnv,
 ): Promise<void> {
-  return new Promise((resolveRun, reject) => {
-    const child = spawn(command, args, {
-      cwd: root,
-      env: environment,
-      stdio: 'inherit',
-    });
-    child.once('error', reject);
-    child.once('exit', (code) =>
-      code === 0
-        ? resolveRun()
-        : reject(new Error(`${command} exited ${code}`)),
-    );
-  });
+  return runNodeTests(command, args, {
+    cwd: root,
+    env: environment,
+    timeoutMs: timeout + 30_000,
+  }).then(() => undefined);
 }
 
 const admin = new Pool({
@@ -151,8 +149,31 @@ try {
       '--import',
       'tsx',
       '--test',
+      '--test-reporter',
+      reporter,
+      '--test-timeout',
+      String(timeout),
       'src/journey/journey.integration.spec.ts',
       'src/journey/active-journey-boarding.spec.ts',
+      'src/passenger-reporting/passenger-reporting.integration.spec.ts',
+    ],
+    { ...process.env, DATABASE_URL: url },
+  );
+  await run(
+    'pnpm',
+    [
+      '--filter',
+      '@transum-in/api',
+      'exec',
+      'node',
+      '--import',
+      'tsx',
+      '--test',
+      '--test-reporter',
+      reporter,
+      '--test-timeout',
+      String(timeout),
+      'src/journey/recovery-acceptance.integration.spec.ts',
     ],
     { ...process.env, DATABASE_URL: url },
   );

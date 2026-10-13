@@ -1,7 +1,9 @@
 import type {
   Journey,
   JourneyAlert,
+  PassengerReport,
   Recovery,
+  RecoveryAcceptance,
   TransitPlace,
 } from './passenger';
 
@@ -63,24 +65,41 @@ export const passengerApi = {
       }),
     }),
   getJourney: (id: string) => request<Journey>(`journeys/${id}`),
-  progress: (id: string, completed: number, total: number, recordedAt: string) =>
+  progress: (id: string, completed: number, total: number, recordedAt: string, acceptedRecoveryId?: string | null) =>
     request<Journey>(`journeys/${id}/progress`, {
       method: 'PATCH',
       body: JSON.stringify({
         completed_segment_count: completed,
         current_segment_sequence: completed < total ? completed : null,
         recorded_at: recordedAt,
+        accepted_recovery_id: acceptedRecoveryId,
       }),
     }),
-  confirmBoarding: (id: string, leg: number, confirmedAt: string) =>
+  confirmBoarding: (
+    id: string,
+    leg: number,
+    confirmedAt: string,
+    acceptedRecoveryId: string | null,
+  ) =>
     request<Journey>(`journeys/${id}/boarding/${leg}`, {
       method: 'POST',
-      body: JSON.stringify({ confirmed_at: confirmedAt }),
+      body: JSON.stringify({
+        confirmed_at: confirmedAt,
+        accepted_recovery_id: acceptedRecoveryId,
+      }),
     }),
-  confirmAlighting: (id: string, leg: number, confirmedAt: string) =>
+  confirmAlighting: (
+    id: string,
+    leg: number,
+    confirmedAt: string,
+    acceptedRecoveryId: string | null,
+  ) =>
     request<Journey>(`journeys/${id}/alighting/${leg}`, {
       method: 'POST',
-      body: JSON.stringify({ confirmed_at: confirmedAt }),
+      body: JSON.stringify({
+        confirmed_at: confirmedAt,
+        accepted_recovery_id: acceptedRecoveryId,
+      }),
     }),
   alerts: (id: string) => request<JourneyAlert[]>(`journeys/${id}/alerts`),
   streamAlerts: async (
@@ -150,6 +169,12 @@ export const passengerApi = {
     }
   },
   getRecovery: (id: string) => request<Recovery>(`recoveries/${id}`),
+  acceptRecovery: (id: string, progressRevision: number, key: string) =>
+    request<RecoveryAcceptance>(`recoveries/${id}/accept`, {
+      method: 'POST',
+      headers: { 'idempotency-key': key },
+      body: JSON.stringify({ progress_revision: progressRevision }),
+    }),
   recovery: (journeyId: string, impactId: string, key: string, recoveryAt: string) =>
     request<Recovery>('recoveries', {
       method: 'POST',
@@ -160,4 +185,20 @@ export const passengerApi = {
         recovery_at: recoveryAt,
       }),
     }),
+  submitReport: (input: {
+    active_journey_id: string | null;
+    category: string;
+    observed_at: string;
+    mobility_entity_id: string;
+    entity_type: string;
+    description: string;
+  }, idempotencyKey: string) =>
+    request<PassengerReport>('passenger-reports', {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  listReports: (journeyId: string) =>
+    request<PassengerReport[]>(`passenger-reports?active_journey_id=${encodeURIComponent(journeyId)}`),
+  getReport: (id: string) => request<PassengerReport>(`passenger-reports/${id}`),
 };

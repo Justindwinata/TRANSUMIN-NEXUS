@@ -7,6 +7,7 @@ import {
   easiestAmongShown,
   evidenceLabel,
   formatDuration,
+  isValidReportDescription,
   journeySearchFailure,
   modeName,
   parsePoint,
@@ -14,6 +15,7 @@ import {
   recoveryPart,
   recoveryPartLabel,
   recoverySummary,
+  remainingReportTargets,
   samePassengerLeg,
   segmentPosition,
   toJakartaIso,
@@ -220,4 +222,61 @@ test('easiest among shown is subset-scoped and tie-aware, not global', () => {
     ).sort(),
     ['x', 'y'],
   );
+});
+
+test('report targets only cover remaining journey parts with provenance', () => {
+  const stopA = {
+    mobility_entity_id: '11111111-1111-4111-8111-111111111111',
+    entity_type: 'STOP',
+    provenance_ref: 'gtfs:route-6H:stop-a',
+  };
+  const routeB = {
+    mobility_entity_id: '22222222-2222-4222-8222-222222222222',
+    entity_type: 'ROUTE',
+    provenance_ref: '',
+  };
+  const journey = {
+    segments: [
+      {
+        sequence: 0,
+        mode: 'TRANSJAKARTA',
+        route_short_name: '6H',
+        from: { name: 'Gambir' },
+        to: { name: 'Sarinah' },
+        entity_bindings: [stopA, routeB],
+      },
+      {
+        sequence: 1,
+        mode: 'TRANSJAKARTA',
+        route_short_name: '6H',
+        from: { name: 'Sarinah' },
+        to: { name: 'Pejaten' },
+        entity_bindings: [
+          { ...stopA, provenance_ref: 'gtfs:route-6H:stop-a-alias' },
+        ],
+      },
+    ],
+  };
+  const remaining = remainingReportTargets(journey, 0);
+  assert.equal(remaining.length, 2, 'stop dedupes, route stays distinct');
+  assert.equal(
+    remaining.filter((t) => t.id === stopA.mobility_entity_id).length,
+    1,
+    'repeated entity+type dedupes',
+  );
+  assert.equal(remaining[0].provenance, 'gtfs:route-6H:stop-a');
+  assert.match(remaining[0].label, /Gambir – Sarinah/);
+  assert.equal(remaining.find((t) => t.type === 'ROUTE').provenance, 'provenance: tidak tersedia');
+  const all = remainingReportTargets(journey, 0);
+  assert.equal(all.every((target) => ['STOP', 'STATION', 'ROUTE'].includes(target.type)), true);
+  const afterFirstLeg = remainingReportTargets(journey, 1);
+  assert.equal(afterFirstLeg.length, 1, 'only later leg remains');
+  assert.equal(remainingReportTargets(journey, 5).length, 0);
+});
+
+test('report descriptions trim to validated server bounds', () => {
+  assert.equal(isValidReportDescription(' '), false);
+  assert.equal(isValidReportDescription('Kondisi haltu banjir.'), true);
+  assert.equal(isValidReportDescription('x'.repeat(2001)), false);
+  assert.equal(isValidReportDescription('row\u0000'), false);
 });

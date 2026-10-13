@@ -314,6 +314,26 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/RecoveryResponse'}
         '404': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/recoveries/{recoveryId}/accept:
+    parameters:
+      - {$ref: '#/components/parameters/RecoveryId'}
+      - {$ref: '#/components/parameters/JourneyOwner'}
+    post:
+      tags: [Recoveries]
+      operationId: acceptRecovery
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RecoveryAcceptRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RecoveryAcceptanceResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
+        '422': {$ref: '#/components/responses/ErrorResponse'}
   /api/v1/operator-recovery/analyses:
     post:
       tags: [Operator Recovery]
@@ -349,6 +369,84 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/CopilotMessageResponse'}
         '400': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/passenger-reports:
+    post:
+      tags: [Journeys]
+      operationId: createPassengerReport
+      description: Owner-scoped passenger report submission. Reports are unverified evidence until controlled review.
+      parameters:
+        - {$ref: '#/components/parameters/JourneyOwner'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PassengerReportCreateRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/PassengerReportResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
+        '429': {$ref: '#/components/responses/ErrorResponse'}
+    get:
+      tags: [Journeys]
+      operationId: listPassengerReportsByJourney
+      description: Owner-scoped refresh list of journey-associated passenger reports.
+      parameters:
+        - {$ref: '#/components/parameters/JourneyOwner'}
+        - {name: active_journey_id, in: query, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
+      responses:
+        '200': {$ref: '#/components/responses/PassengerReportCollectionResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/passenger-reports/{reportId}:
+    parameters:
+      - {name: reportId, in: path, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
+      - {$ref: '#/components/parameters/JourneyOwner'}
+    get:
+      tags: [Journeys]
+      operationId: getPassengerReport
+      responses:
+        '200': {$ref: '#/components/responses/PassengerReportResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/controlled/passenger-reports/{reportId}/verify:
+    post:
+      tags: [Journeys]
+      operationId: verifyControlledPassengerReport
+      description: Trusted operator-controlled verification of one passenger report into verified SIMULATED incident evidence. Production remains fail-closed.
+      parameters:
+        - {name: reportId, in: path, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ControlledPassengerReportVerifyRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/ControlledPassengerReportVerifyResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/controlled/passenger-reports/{reportId}/close:
+    post:
+      tags: [Journeys]
+      operationId: closeControlledPassengerReport
+      description: Dev/test-only terminal of a controlled SIMULATED passenger review (Resolved = condition cleared, Retracted = assertion withdrawn). Keeps acceptance repeatable without permanently blocking planning.
+      parameters:
+        - {name: reportId, in: path, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ControlledPassengerReportCloseRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/ControlledPassengerReportCloseResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
   /api/v1/data-sources:
     get:
       tags: [Transit Data]
@@ -462,6 +560,9 @@ components:
     JourneyPlanResponse:
       description: Candidate journeys
       content: {application/json: {schema: {$ref: '#/components/schemas/JourneyPlanEnvelope'}}}
+    RecoveryAcceptanceResponse:
+      description: Accepted recovery with immutable-plan pointer semantics
+      content: {application/json: {schema: {$ref: '#/components/schemas/RecoveryAcceptanceEnvelope'}}}
     JourneyResponse:
       description: Journey resource
       content: {application/json: {schema: {$ref: '#/components/schemas/JourneyEnvelope'}}}
@@ -480,6 +581,18 @@ components:
     CopilotMessageResponse:
       description: Grounded copilot response
       content: {application/json: {schema: {$ref: '#/components/schemas/CopilotMessageEnvelope'}}}
+    PassengerReportResponse:
+      description: Owner-scoped passenger report
+      content: {application/json: {schema: {$ref: '#/components/schemas/PassengerReportEnvelope'}}}
+    PassengerReportCollectionResponse:
+      description: Owner-scoped journey-associated passenger reports
+      content: {application/json: {schema: {$ref: '#/components/schemas/PassengerReportCollectionEnvelope'}}}
+    ControlledPassengerReportVerifyResponse:
+      description: Controlled verification outcome
+      content: {application/json: {schema: {$ref: '#/components/schemas/ControlledPassengerReportVerifyEnvelope'}}}
+    ControlledPassengerReportCloseResponse:
+      description: Controlled close outcome
+      content: {application/json: {schema: {$ref: '#/components/schemas/ControlledPassengerReportCloseEnvelope'}}}
     ErrorResponse:
       description: Machine-readable error
       content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}
@@ -789,6 +902,9 @@ components:
         activated_at: {type: string, format: date-time}
         completed_at: {type: [string, 'null'], format: date-time}
         plan_fingerprint: {type: string, pattern: '^[0-9a-f]{64}$'}
+        accepted_recovery_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}]}
+        accepted_before_segment_count: {type: [integer, 'null'], minimum: 0}
+        original_plan: {anyOf: [{$ref: '#/components/schemas/Journey'}, {type: 'null'}]}
         progress: {$ref: '#/components/schemas/JourneyProgress'}
         dependencies: {type: array, items: {$ref: '#/components/schemas/JourneyDependency'}}
     JourneyPlanEnvelope: {type: object, required: [data, meta], properties: {data: {type: array, items: {$ref: '#/components/schemas/Journey'}}, meta: {$ref: '#/components/schemas/Meta'}}}
@@ -806,11 +922,12 @@ components:
       required: [confirmed_at]
       properties:
         confirmed_at: {type: string, format: date-time}
+        accepted_recovery_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}]}
     JourneyProgressRequest:
       type: object
       additionalProperties: false
       required: [completed_segment_count, recorded_at]
-      properties: {completed_segment_count: {type: integer, minimum: 0}, current_segment_sequence: {type: integer, minimum: 0}, recorded_at: {type: string, format: date-time}, current_position: {$ref: '#/components/schemas/GeoPoint'}}
+      properties: {completed_segment_count: {type: integer, minimum: 0}, current_segment_sequence: {type: integer, minimum: 0}, recorded_at: {type: string, format: date-time}, current_position: {$ref: '#/components/schemas/GeoPoint'}, accepted_recovery_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}]}}
     JourneyProgress:
       type: object
       additionalProperties: false
@@ -947,7 +1064,34 @@ components:
         rejoin_reason: {type: string}
         proposed_journey: {anyOf: [{$ref: '#/components/schemas/Journey'}, {type: 'null'}]}
         baseline_journey: {anyOf: [{$ref: '#/components/schemas/Journey'}, {type: 'null'}]}
+        accepted: {type: boolean}
+        accepted_at: {type: [string, 'null'], format: date-time}
+        accepted_journey_fingerprint: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
     RecoveryEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/Recovery'}, meta: {$ref: '#/components/schemas/Meta'}}}
+    RecoveryAcceptRequest:
+      type: object
+      additionalProperties: false
+      required: [progress_revision]
+      properties:
+        progress_revision: {type: integer, minimum: 0}
+        accepted_at: {type: string, format: date-time}
+    RecoveryAcceptance:
+      type: object
+      additionalProperties: false
+      required: [recovery_id, original_journey_id, accepted_progress_revision, accepted_impact_id, accepted_state_transition_id, accepted_mobility_projection_version, accepted_journey_fingerprint, current_replacement_journey, accepted_at, original_plan_preserved, current_pointer_advanced]
+      properties:
+        recovery_id: {$ref: '#/components/schemas/Uuid'}
+        original_journey_id: {$ref: '#/components/schemas/Uuid'}
+        accepted_progress_revision: {type: integer, minimum: 0}
+        accepted_impact_id: {$ref: '#/components/schemas/Uuid'}
+        accepted_state_transition_id: {$ref: '#/components/schemas/Uuid'}
+        accepted_mobility_projection_version: {type: string}
+        accepted_journey_fingerprint: {type: string, pattern: '^[0-9a-f]{64}$'}
+        current_replacement_journey: {$ref: '#/components/schemas/Journey'}
+        accepted_at: {type: string, format: date-time}
+        original_plan_preserved: {type: boolean, enum: [true]}
+        current_pointer_advanced: {type: boolean, enum: [true]}
+    RecoveryAcceptanceEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/RecoveryAcceptance'}, meta: {$ref: '#/components/schemas/Meta'}}}
     OperatorAnalysisRequest:
       type: object
       required: [route_id, network_snapshot_id, target_headway_seconds, turnaround_buffer_seconds]
@@ -966,6 +1110,43 @@ components:
       type: object
       required: [message_id, answer, evidence_references, tool_result_references, fallback_status]
       properties: {message_id: {$ref: '#/components/schemas/Uuid'}, answer: {type: string}, evidence_references: {type: array, items: {type: string}}, tool_result_references: {type: array, items: {type: string}}, evidence_type: {$ref: '#/components/schemas/EvidenceType'}, fallback_status: {type: string, enum: [GROUNDED, DETERMINISTIC_FALLBACK, INSUFFICIENT_EVIDENCE]}}
+    PassengerReportCategory: {type: string, enum: [CLEANLINESS, CROWDING, ACCESSIBILITY, SAFETY, SERVICE, OTHER]}
+    ControlledReportOperationalState: {type: string, enum: [DEGRADED, DISRUPTED, UNAVAILABLE, RECOVERING]}
+    PassengerOperationalIncidentType: {type: string, enum: [STATION_CLOSURE, STOP_CLOSURE, SERVICE_SUSPENSION, SERVICE_TRUNCATION, ROUTE_DIVERSION, INFRASTRUCTURE_FAILURE, MANUAL_OPERATOR_INCIDENT, OTHER]}
+    PassengerReport:
+      type: object
+      additionalProperties: false
+      required: [report_id, active_journey_id, category, observed_at, received_at, mobility_entity_id, entity_type, description, source, verification_status, created_at]
+      properties: {report_id: {$ref: '#/components/schemas/Uuid'}, active_journey_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}]}, category: {$ref: '#/components/schemas/PassengerReportCategory'}, observed_at: {type: string, format: date-time}, received_at: {type: string, format: date-time}, mobility_entity_id: {$ref: '#/components/schemas/Uuid'}, entity_type: {type: string, enum: [STOP, STATION, ROUTE]}, description: {type: string, minLength: 1, maxLength: 2000, pattern: '^[^\p{Cc}\p{Cf}]+$'}, source: {type: string, enum: [PASSENGER_SELF_REPORT]}, verification_status: {type: string, enum: [REPORTED_UNVERIFIED, CONTROLLED_VERIFIED]}, created_at: {type: string, format: date-time}}
+    PassengerReportEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/PassengerReport'}, meta: {$ref: '#/components/schemas/Meta'}}}
+    PassengerReportCollectionEnvelope: {type: object, required: [data, meta], properties: {data: {type: array, items: {$ref: '#/components/schemas/PassengerReport'}}, meta: {$ref: '#/components/schemas/Meta'}}}
+    PassengerReportCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [category, observed_at, mobility_entity_id, entity_type, description]
+      properties: {active_journey_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}]}, category: {$ref: '#/components/schemas/PassengerReportCategory'}, observed_at: {type: string, format: date-time}, mobility_entity_id: {$ref: '#/components/schemas/Uuid'}, entity_type: {type: string, enum: [STOP, STATION, ROUTE]}, description: {type: string, minLength: 1, maxLength: 2000, pattern: '^[^\p{Cc}\p{Cf}]+$'}}
+    ControlledPassengerReportVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [operational_state, incident_type, reason]
+      properties: {operational_state: {$ref: '#/components/schemas/ControlledReportOperationalState'}, incident_type: {$ref: '#/components/schemas/PassengerOperationalIncidentType'}, reason: {type: string, minLength: 1, maxLength: 1000, pattern: '^[^\p{Cc}\p{Cf}]+$'}}
+    ControlledPassengerReportVerifyResponse:
+      type: object
+      additionalProperties: false
+      required: [report_id, verification_status, incident_id]
+      properties: {report_id: {$ref: '#/components/schemas/Uuid'}, verification_status: {type: string, enum: [CONTROLLED_VERIFIED]}, incident_id: {$ref: '#/components/schemas/Uuid'}, review_replay: {type: boolean}, evidence_status: {type: string}}
+    ControlledPassengerReportVerifyEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/ControlledPassengerReportVerifyResponse'}, meta: {$ref: '#/components/schemas/Meta'}}}
+    ControlledPassengerReportCloseRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties: {decision: {type: string, enum: [RESOLVED, RETRACTED]}, reason: {type: string, minLength: 1, maxLength: 1000, pattern: '^[^\p{Cc}\p{Cf}]+$'}}
+    ControlledPassengerReportCloseResponse:
+      type: object
+      additionalProperties: false
+      required: [report_id, incident_id, lifecycle_status, decision]
+      properties: {report_id: {$ref: '#/components/schemas/Uuid'}, incident_id: {$ref: '#/components/schemas/Uuid'}, lifecycle_status: {type: string, enum: [RESOLVED, RETRACTED]}, decision: {type: string, enum: [RESOLVED, RETRACTED]}}
+    ControlledPassengerReportCloseEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/ControlledPassengerReportCloseResponse'}, meta: {$ref: '#/components/schemas/Meta'}}}
     CopilotMessageEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/CopilotMessage'}, meta: {$ref: '#/components/schemas/Meta'}}}
     ErrorCode: {type: string, enum: [VALIDATION_ERROR, DATA_COVERAGE_LIMITATION, NO_FEASIBLE_JOURNEY, NO_RECOVERY_PATH, SCENARIO_INVALID, SIMULATION_FAILED, UPSTREAM_UNAVAILABLE, AUTH_REQUIRED, FORBIDDEN, NOT_FOUND, CONFLICT, RATE_LIMITED, INTERNAL_ERROR]}
     ErrorEnvelope:

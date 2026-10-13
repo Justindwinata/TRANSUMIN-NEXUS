@@ -3,8 +3,68 @@ import type { components } from '@transum-in/shared-types';
 export type Journey = components['schemas']['Journey'];
 export type JourneySegment = components['schemas']['JourneySegment'];
 export type JourneyAlert = components['schemas']['JourneyAlert'];
+export type RecoveryAcceptance = components['schemas']['RecoveryAcceptance'];
 export type Recovery = components['schemas']['Recovery'];
 export type TransitPlace = components['schemas']['TransitPlace'];
+export type PassengerReport = Readonly<{
+  report_id: string;
+  active_journey_id: string | null;
+  category: string;
+  observed_at: string;
+  received_at: string;
+  mobility_entity_id: string;
+  entity_type: 'STOP' | 'STATION' | 'ROUTE';
+  description: string;
+  source: 'PASSENGER_SELF_REPORT';
+  verification_status: 'REPORTED_UNVERIFIED' | 'CONTROLLED_VERIFIED';
+  created_at: string;
+}>;
+
+export type PassengerReportTarget = Readonly<{
+  key: string;
+  id: string;
+  type: 'STOP' | 'STATION' | 'ROUTE';
+  label: string;
+  provenance: string;
+}>;
+
+export function remainingReportTargets(
+  journey: Journey,
+  completedCount: number,
+): PassengerReportTarget[] {
+  const remaining = journey.segments.filter(
+    (segment) => segment.sequence >= completedCount,
+  );
+  const byKey = new Map<string, PassengerReportTarget>();
+  for (const segment of remaining) {
+    for (const binding of segment.entity_bindings) {
+      if (
+        !binding.mobility_entity_id ||
+        !['STOP', 'STATION', 'ROUTE'].includes(binding.entity_type)
+      )
+        continue;
+      const key = `${binding.mobility_entity_id}:${binding.entity_type}`;
+      if (byKey.has(key)) continue;
+      const label =
+        binding.entity_type === 'ROUTE'
+          ? `${passengerRouteName(segment) || modeName(segment.mode)} · ${binding.entity_type}`
+          : `${segment.from.name} – ${segment.to.name} · ${binding.entity_type}`;
+      byKey.set(key, {
+        key,
+        id: binding.mobility_entity_id,
+        type: binding.entity_type as PassengerReportTarget['type'],
+        label,
+        provenance: binding.provenance_ref || 'provenance: tidak tersedia',
+      });
+    }
+  }
+  return [...byKey.values()];
+}
+
+export function isValidReportDescription(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length >= 1 && trimmed.length <= 2000 && !/\p{Cc}/u.test(value);
+}
 
 const names: Record<JourneySegment['mode'], string> = {
   WALK: 'Walk',

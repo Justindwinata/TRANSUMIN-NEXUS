@@ -33,6 +33,9 @@ type JourneyRow = Readonly<{
   lifecycleStatus: ActiveJourney['lifecycleStatus'];
   planFingerprint: string;
   originalPlan: JourneyAlternative;
+  currentPlan: JourneyAlternative | null;
+  acceptedRecoveryId: string | null;
+  acceptedBeforeLegCount: number | null;
   activatedAt: Date;
   completedAt: Date | null;
   completedLegCount: number;
@@ -47,6 +50,7 @@ type JourneyRow = Readonly<{
 }>;
 
 type DependencyRow = Readonly<{
+  accepted?: boolean;
   dependencyId: string;
   journeyId: string;
   legSequence: number;
@@ -223,6 +227,9 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
       select p.id as "journeyId", p.owner_ref as "ownerRef",
         a.lifecycle_status as "lifecycleStatus", p.plan_fingerprint as "planFingerprint",
         p.original_plan_json as "originalPlan", a.activated_at as "activatedAt",
+        a.current_itinerary_json as "currentPlan",
+        a.accepted_recovery_id as "acceptedRecoveryId",
+        a.accepted_before_leg_count as "acceptedBeforeLegCount",
         a.completed_at as "completedAt", pr.completed_leg_count as "completedLegCount",
         pr.current_leg_sequence as "currentLegSequence",
         pr.progress_method as "progressMethod", pr.recorded_at as "recordedAt",
@@ -253,6 +260,9 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
       lifecycleStatus: row.lifecycleStatus,
       planFingerprint: row.planFingerprint,
       originalPlan: row.originalPlan,
+      currentPlan: row.currentPlan ?? row.originalPlan,
+      acceptedRecoveryId: row.acceptedRecoveryId,
+      acceptedBeforeLegCount: row.acceptedBeforeLegCount,
       activatedAt: row.activatedAt.toISOString(),
       completedAt: row.completedAt?.toISOString() ?? null,
       progress: {
@@ -280,16 +290,26 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
         recordedAt: Date;
         boardingConfirmedLegSequence: number | null;
         alightingConfirmedLegSequence: number | null;
+        acceptedRecoveryId: string | null;
         legCount: number;
+        currentPlan: JourneyAlternative | null;
+        acceptedBefore: number | null;
       }>`
         select p.owner_ref as "ownerRef", a.lifecycle_status as status,
+          a.accepted_recovery_id as "acceptedRecoveryId",
           pr.completed_leg_count as "completedLegCount",
           pr.current_leg_sequence as "currentLegSequence",
           pr.recorded_at as "recordedAt",
           pr.boarding_confirmed_leg_sequence as "boardingConfirmedLegSequence",
           pr.alighting_confirmed_leg_sequence as "alightingConfirmedLegSequence",
-          (select count(*)::int from journey.journey_leg l
-            where l.journey_id=p.id) as "legCount"
+          a.current_itinerary_json as "currentPlan",
+          a.accepted_before_leg_count as "acceptedBefore",
+          coalesce(
+            case when a.current_itinerary_json is not null
+              then jsonb_array_length(a.current_itinerary_json->'legs')
+              else null end,
+            (select count(*)::int from journey.journey_leg l where l.journey_id=p.id)
+          ) as "legCount"
         from journey.journey_plan p
         join journey.active_journey a on a.journey_id=p.id
         join journey.journey_progress pr on pr.journey_id=p.id
@@ -307,6 +327,7 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
           'OWNER_SCOPE_MISMATCH',
           'Journey owner scope mismatch.',
         );
+      assertCurrentRoute(row.acceptedRecoveryId, input.acceptedRecoveryId);
       if (row.status !== 'ACTIVE')
         throw new ActiveJourneyError(
           'JOURNEY_NOT_ACTIVE',
@@ -327,15 +348,21 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
           'Progress must be monotonic and remain within the immutable leg sequence.',
         );
       // Transit leg cannot be marked completed before explicit alighting for that leg.
+      // Route-aware: accepted replacement mode resolved from materialized current itinerary;
+      // original journey_leg rows remain immutable history only.
       if (input.completedLegCount > row.completedLegCount) {
         const transitToComplete =
-          await sql<{ sequence: number }>`select sequence from journey.journey_leg
-            where journey_id=${input.journeyId}::uuid
-              and sequence >= ${row.completedLegCount}
-              and sequence < ${input.completedLegCount}
-              and mode <> 'WALK'`.execute(transaction);
-        for (const leg of transitToComplete.rows)
-          if (row.alightingConfirmedLegSequence === null || leg.sequence !== row.alightingConfirmedLegSequence)
+          row.currentPlan === null
+            ? (await sql<{ sequence: number }>`select sequence from journey.journey_leg
+              where journey_id=${input.journeyId}::uuid
+                and sequence >= ${row.completedLegCount}
+                and sequence < ${input.completedLegCount}
+                and mode <> 'WALK'`.execute(transaction)).rows.map((leg) => leg.sequence)
+            : (row.currentPlan.legs ?? [])
+                .filter((leg) => leg.sequence >= row.completedLegCount && leg.sequence < input.completedLegCount && leg.mode !== 'WALK')
+                .map((leg) => leg.sequence);
+        for (const sequence of transitToComplete)
+          if (row.alightingConfirmedLegSequence === null || sequence !== row.alightingConfirmedLegSequence)
             throw new ActiveJourneyError(
               'INVALID_PROGRESS',
               'Transit progress requires alighting confirmation for the completed leg.',
@@ -375,7 +402,7 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
     return this.get(input.journeyId, input.ownerRef);
   }
 
-  async confirmBoarding(input: Readonly<{ journeyId: string; ownerRef: string; legSequence: number; confirmedAt: string }>): Promise<ActiveJourney> {
+  async confirmBoarding(input: Readonly<{ journeyId: string; ownerRef: string; legSequence: number; confirmedAt: string; acceptedRecoveryId?: string | null }>): Promise<ActiveJourney> {
     await this.database.transaction().execute(async (transaction) => {
       const current = await sql<{
         ownerRef: string;
@@ -386,10 +413,12 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
         boardingConfirmedLegSequence: number | null;
         boardingConfirmedAt: Date | null;
         alightingConfirmedLegSequence: number | null;
+        acceptedRecoveryId: string | null;
         legCount: number;
         mode: string | null;
       }>`
         select p.owner_ref as "ownerRef", a.lifecycle_status as status,
+          a.accepted_recovery_id as "acceptedRecoveryId",
           pr.completed_leg_count as "completedLegCount",
           pr.current_leg_sequence as "currentLegSequence",
           pr.recorded_at as "recordedAt",
@@ -397,7 +426,9 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
           pr.boarding_confirmed_at as "boardingConfirmedAt",
           pr.alighting_confirmed_leg_sequence as "alightingConfirmedLegSequence",
           (select count(*)::int from journey.journey_leg l where l.journey_id=p.id) as "legCount",
-          (select mode from journey.journey_leg l where l.journey_id=p.id and l.sequence=${input.legSequence} limit 1) as "mode"
+          case when a.current_itinerary_json is not null
+             then a.current_itinerary_json->'legs'->${input.legSequence}::int->>'mode'
+             else (select mode from journey.journey_leg l where l.journey_id=p.id and l.sequence=${input.legSequence} limit 1) end as "mode"
         from journey.journey_plan p
         join journey.active_journey a on a.journey_id=p.id
         join journey.journey_progress pr on pr.journey_id=p.id
@@ -407,6 +438,7 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
       const row = current.rows[0];
       if (row === undefined) throw new ActiveJourneyError('JOURNEY_NOT_FOUND', 'Active journey not found.');
       if (row.ownerRef !== input.ownerRef) throw new ActiveJourneyError('OWNER_SCOPE_MISMATCH', 'Journey owner scope mismatch.');
+      assertCurrentRoute(row.acceptedRecoveryId, input.acceptedRecoveryId);
       if (row.status !== 'ACTIVE') throw new ActiveJourneyError('JOURNEY_NOT_ACTIVE', 'Only an ACTIVE journey can be boarded.');
       if (row.mode === null) throw new ActiveJourneyError('INVALID_BOARDING', 'Leg does not exist.');
       if (row.mode === 'WALK') throw new ActiveJourneyError('INVALID_BOARDING', 'Cannot board a walking leg; walking is not vehicle boarding.');
@@ -446,7 +478,7 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
     return this.get(input.journeyId, input.ownerRef);
   }
 
-  async confirmAlighting(input: Readonly<{ journeyId: string; ownerRef: string; legSequence: number; confirmedAt: string }>): Promise<ActiveJourney> {
+  async confirmAlighting(input: Readonly<{ journeyId: string; ownerRef: string; legSequence: number; confirmedAt: string; acceptedRecoveryId?: string | null }>): Promise<ActiveJourney> {
     await this.database.transaction().execute(async (transaction) => {
       const current = await sql<{
         ownerRef: string;
@@ -458,16 +490,20 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
         alightingConfirmedLegSequence: number | null;
         alightingConfirmedAt: Date | null;
         mode: string | null;
+        acceptedRecoveryId: string | null;
         legCount: number;
       }>`
         select p.owner_ref as "ownerRef", a.lifecycle_status as status,
+          a.accepted_recovery_id as "acceptedRecoveryId",
           pr.completed_leg_count as "completedLegCount",
           pr.current_leg_sequence as "currentLegSequence",
           pr.recorded_at as "recordedAt",
           pr.boarding_confirmed_leg_sequence as "boardingConfirmedLegSequence",
           pr.alighting_confirmed_leg_sequence as "alightingConfirmedLegSequence",
           pr.alighting_confirmed_at as "alightingConfirmedAt",
-          (select mode from journey.journey_leg l where l.journey_id=p.id and l.sequence=${input.legSequence} limit 1) as "mode",
+          case when a.current_itinerary_json is not null
+             then a.current_itinerary_json->'legs'->${input.legSequence}::int->>'mode'
+             else (select mode from journey.journey_leg l where l.journey_id=p.id and l.sequence=${input.legSequence} limit 1) end as "mode",
           (select count(*)::int from journey.journey_leg l where l.journey_id=p.id) as "legCount"
         from journey.journey_plan p
         join journey.active_journey a on a.journey_id=p.id
@@ -478,6 +514,7 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
       const row = current.rows[0];
       if (row === undefined) throw new ActiveJourneyError('JOURNEY_NOT_FOUND', 'Active journey not found.');
       if (row.ownerRef !== input.ownerRef) throw new ActiveJourneyError('OWNER_SCOPE_MISMATCH', 'Journey owner scope mismatch.');
+      assertCurrentRoute(row.acceptedRecoveryId, input.acceptedRecoveryId);
       if (row.status !== 'ACTIVE') throw new ActiveJourneyError('JOURNEY_NOT_ACTIVE', 'Only an ACTIVE journey can be exited.');
       if (row.mode === null) throw new ActiveJourneyError('INVALID_BOARDING', 'Leg does not exist.');
       if (row.mode === 'WALK') throw new ActiveJourneyError('INVALID_BOARDING', 'Cannot record alighting for a walking leg.');
@@ -552,14 +589,22 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
       select d.id as "dependencyId", d.journey_id as "journeyId",
         d.leg_sequence as "legSequence", d.mobility_entity_id as "mobilityEntityId",
         d.canonical_entity_id as "canonicalEntityId", d.entity_type as "entityType",
-        d.product_mode as "productMode", d.provenance_ref as "provenanceRef"
+        d.product_mode as "productMode", d.provenance_ref as "provenanceRef", false as accepted
       from journey.journey_dependency d
       join journey.active_journey a on a.journey_id=d.journey_id
       join journey.journey_progress p on p.journey_id=d.journey_id
       where d.mobility_entity_id=${state.mobilityEntityId}::uuid
-        and a.lifecycle_status='ACTIVE'
+        and a.lifecycle_status='ACTIVE' and a.accepted_recovery_id is null
         and d.leg_sequence >= p.completed_leg_count
-      order by d.journey_id, d.leg_sequence, d.id
+      union all
+      select d.id, d.journey_id, d.leg_sequence, d.mobility_entity_id,
+        d.canonical_entity_id, d.entity_type, d.product_mode, d.provenance_ref, true
+      from journey.active_journey_dependency d
+      join journey.active_journey a on a.journey_id=d.journey_id and a.accepted_recovery_id=d.recovery_id
+      join journey.journey_progress p on p.journey_id=d.journey_id
+      where d.mobility_entity_id=${state.mobilityEntityId}::uuid and a.lifecycle_status='ACTIVE'
+        and d.leg_sequence >= p.completed_leg_count
+      order by "journeyId", "legSequence", "dependencyId"
     `.execute(this.database);
     const byJourney = new Map<string, DependencyRow[]>();
     for (const dependency of dependencies.rows) {
@@ -631,12 +676,18 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
           ) on conflict (journey_id, state_transition_id) do nothing returning id
         `.execute(transaction);
           if (inserted.rows[0] === undefined) return null;
-          for (const dependency of affectedDependencies)
+          for (const dependency of affectedDependencies) {
+            if (dependency.accepted) {
+              await sql`insert into journey.current_impact_dependency (impact_id, dependency_id)
+                values (${impactId}::uuid, ${dependency.dependencyId}::uuid) on conflict do nothing`.execute(transaction);
+              continue;
+            }
             await sql`
             insert into journey.journey_impact_dependency (impact_id, dependency_id)
             values (${impactId}::uuid, ${dependency.dependencyId}::uuid)
             on conflict do nothing
           `.execute(transaction);
+          }
           const alertId = stableUuid('journey-targeted-alert', impactId);
           const alertType =
             impactStatus === 'BLOCKING'
@@ -680,12 +731,18 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
     journeyId: string,
   ): Promise<readonly JourneyDependency[]> {
     const result = await sql<DependencyRow>`
-      select id as "dependencyId", journey_id as "journeyId",
-        leg_sequence as "legSequence", mobility_entity_id as "mobilityEntityId",
-        canonical_entity_id as "canonicalEntityId", entity_type as "entityType",
-        product_mode as "productMode", provenance_ref as "provenanceRef"
-      from journey.journey_dependency where journey_id=${journeyId}::uuid
-      order by leg_sequence, mobility_entity_id
+      select d.id as "dependencyId", d.journey_id as "journeyId",
+        d.leg_sequence as "legSequence", d.mobility_entity_id as "mobilityEntityId",
+        d.canonical_entity_id as "canonicalEntityId", d.entity_type as "entityType",
+        d.product_mode as "productMode", d.provenance_ref as "provenanceRef"
+      from journey.journey_dependency d join journey.active_journey a on a.journey_id=d.journey_id
+      where d.journey_id=${journeyId}::uuid and a.accepted_recovery_id is null
+      union all
+      select d.id, d.journey_id, d.leg_sequence, d.mobility_entity_id,
+        d.canonical_entity_id, d.entity_type, d.product_mode, d.provenance_ref
+      from journey.active_journey_dependency d join journey.active_journey a on a.journey_id=d.journey_id
+      where d.journey_id=${journeyId}::uuid and d.recovery_id=a.accepted_recovery_id
+      order by "legSequence", "mobilityEntityId"
     `.execute(this.database);
     return result.rows;
   }
@@ -724,8 +781,13 @@ export class KyselyActiveJourneyRepository implements ActiveJourneyRepositoryPor
         array_agg(distinct d.leg_sequence order by d.leg_sequence)::int[] as "affectedLegSequences"
       from journey.targeted_alert a
       join journey.journey_impact i on i.id=a.impact_id
-      join journey.journey_impact_dependency x on x.impact_id=i.id
-      join journey.journey_dependency d on d.id=x.dependency_id
+      join (
+        select x.impact_id, d.leg_sequence from journey.journey_impact_dependency x
+        join journey.journey_dependency d on d.id=x.dependency_id
+        union all
+        select x.impact_id, d.leg_sequence from journey.current_impact_dependency x
+        join journey.active_journey_dependency d on d.id=x.dependency_id
+      ) d on d.impact_id=i.id
       ${where}
       group by a.id, i.id
       order by a.created_at asc, a.id asc
@@ -775,4 +837,9 @@ function alertMessage(
   if (state === 'RECOVERING')
     return 'An affected journey dependency is recovering.';
   return 'An upcoming journey dependency has an operational disruption.';
+}
+
+export function assertCurrentRoute(current: string | null, supplied: string | null | undefined): void {
+  if (current !== (supplied ?? null))
+    throw new ActiveJourneyError('STALE_ROUTE', 'Action targets a superseded itinerary; reload the journey.');
 }

@@ -6,7 +6,7 @@ import {
   TrainIcon,
   WarningCircleIcon,
 } from '@phosphor-icons/react';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { PassengerApiError, passengerApi } from '../lib/passenger-api';
 import { DEMO_REPLAY } from '../lib/demo-replay';
 import { PlaceSearch } from './place-search';
@@ -28,6 +28,8 @@ import {
   recoveryPart,
   recoveryPartLabel,
   recoverySummary,
+  remainingReportTargets,
+  isValidReportDescription,
   samePassengerLeg,
   segmentPosition,
   toJakartaIso,
@@ -35,7 +37,9 @@ import {
   type Journey,
   type JourneyPreference,
   type JourneyAlert,
+  type PassengerReport,
   type Recovery,
+  type RecoveryAcceptance,
   type TransitPlace,
 } from '../lib/passenger';
 
@@ -72,12 +76,14 @@ export function PassengerApp() {
   const [active, setActive] = useState<Journey | null>(null);
   const [alerts, setAlerts] = useState<JourneyAlert[]>([]);
   const [recovery, setRecovery] = useState<Recovery | null>(null);
+  const [acceptance, setAcceptance] = useState<RecoveryAcceptance | null>(null);
+  const acceptKey = useRef<string | null>(null);
   const [alertError, setAlertError] = useState('');
   const [streamStatus, setStreamStatus] = useState<
     'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'OFFLINE'
   >('OFFLINE');
   const [busy, setBusy] = useState<
-    'search' | 'activate' | 'progress' | 'boarding' | 'alighting' | 'recovery' | null
+    'search' | 'activate' | 'progress' | 'boarding' | 'alighting' | 'recovery' | 'report' | null
   >(null);
   const [gps, setGps] = useState<
     | { state: 'OFF' }
@@ -89,10 +95,33 @@ export function PassengerApp() {
   >({ state: 'OFF' });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [reportCategory, setReportCategory] = useState('SERVICE');
+  const [reportObservedAt, setReportObservedAt] = useState('');
+  const [reportDescription, setReportDescription] = useState('');
+  const [reportStatus, setReportStatus] = useState('');
+  const [reportFormError, setReportFormError] = useState('');
+  const [reportTargetKey, setReportTargetKey] = useState('');
+  const [reports, setReports] = useState<PassengerReport[]>([]);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [reportsError, setReportsError] = useState('');
+  const reportKey = useRef<{ fingerprint: string; key: string } | null>(null);
+
+  async function loadPersistedReports(journeyId: string) {
+    setReportsLoading(true);
+    setReportsError('');
+    try {
+      setReports(await passengerApi.listReports(journeyId));
+    } catch (cause) {
+      setReportsError(errorMessage(cause));
+    } finally {
+      setReportsLoading(false);
+    }
+  }
 
   useEffect(() => {
     setDeparture(initialJakartaDateTime());
     setProgressAt(initialJakartaDateTime());
+    setReportObservedAt(initialJakartaDateTime());
     const storedJourney = localStorage.getItem(journeyKey);
     if (storedJourney) {
       void passengerApi
@@ -100,6 +129,7 @@ export function PassengerApp() {
         .then((journey) => {
           setActive(journey);
           setSelected(journey);
+          void loadPersistedReports(journey.journey_id);
           const storedRecovery = localStorage.getItem(
             `${recoveryKey}.${journey.journey_id}`,
           );
@@ -300,6 +330,11 @@ export function PassengerApp() {
       setAlerts([]);
       setRecovery(null);
       localStorage.setItem(journeyKey, journey.journey_id);
+      setReports([]);
+      setReportsError('');
+      setReportStatus('');
+      setReportFormError('');
+      void loadPersistedReports(journey.journey_id);
       setMessage(
         historical
           ? 'Controlled historical journey started. This is not live travel; progress is manual.'
@@ -321,6 +356,7 @@ export function PassengerApp() {
         active.journey_id,
         currentLeg.sequence,
         toJakartaIso(progressAt),
+        active.accepted_recovery_id ?? null,
       );
       setActive(updated);
       setSelected(updated);
@@ -343,6 +379,7 @@ export function PassengerApp() {
         active.journey_id,
         currentLeg.sequence,
         toJakartaIso(progressAt),
+        active.accepted_recovery_id ?? null,
       );
       setActive(alighted);
       setSelected(alighted);
@@ -368,6 +405,7 @@ export function PassengerApp() {
         next,
         active.segments.length,
         toJakartaIso(progressAt),
+        active.accepted_recovery_id ?? null,
       );
       setActive(updated);
       setSelected(updated);
@@ -408,6 +446,95 @@ export function PassengerApp() {
     );
   }
 
+  async function submitPassengerReport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!active) return;
+    setReportFormError('');
+    setReportStatus('');
+    const target =
+      reportTargets.find((item) => item.key === reportTargetKey) ?? null;
+    if (!target) {
+      setReportFormError(
+        'Pilih lokasi atau layanan pada sisa perjalanan sebelum mengirim.',
+      );
+      return;
+    }
+    if (!isValidReportDescription(reportDescription)) {
+      setReportFormError(
+        'Keterangan wajib 1–2000 karakter dan tidak boleh memuat karakter kontrol.',
+      );
+      return;
+    }
+    let observedAt: string;
+    try {
+      observedAt = new Date(toJakartaIso(reportObservedAt)).toISOString();
+    } catch {
+      setReportFormError('Pilih waktu kejadian yang valid (WIB).');
+      return;
+    }
+    const input = {
+      active_journey_id: active.journey_id,
+      category: reportCategory,
+      observed_at: observedAt,
+      mobility_entity_id: target.id,
+      entity_type: target.type,
+      description: reportDescription.trim(),
+    };
+    const fingerprint = JSON.stringify(input);
+    if (reportKey.current?.fingerprint !== fingerprint)
+      reportKey.current = { fingerprint, key: crypto.randomUUID() };
+    setBusy('report');
+    try {
+      const report = await passengerApi.submitReport(
+        input,
+        reportKey.current.key,
+      );
+      setReports((current) => [
+        report,
+        ...current.filter((item) => item.report_id !== report.report_id),
+      ]);
+      setReportStatus(
+        `Laporan tersimpan ${report.report_id} · ${
+          report.verification_status === 'REPORTED_UNVERIFIED'
+            ? 'Belum diverifikasi'
+            : 'Terverifikasi melalui peninjauan terkendali'
+        }. Laporan bukan konfirmasi penutupan layanan dan tetap tersimpan setelah refresh.`,
+      );
+      setReportDescription('');
+      reportKey.current = null;
+    } catch (cause) {
+      setReportFormError(
+        `Laporan gagal dikirim: ${errorMessage(cause)} Coba lagi.`,
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function refreshPassengerReport(reportId: string) {
+    setBusy('report');
+    setReportsError('');
+    try {
+      const report = await passengerApi.getReport(reportId);
+      setReports((current) =>
+        current.map((item) =>
+          item.report_id === report.report_id ? report : item,
+        ),
+      );
+      setReportStatus(
+        `Laporan ${report.report_id} · ${
+          report.verification_status === 'REPORTED_UNVERIFIED'
+            ? 'Belum diverifikasi'
+            : 'Terverifikasi melalui peninjauan terkendali'
+        }. Status menunjukkan peninjauan, bukan penutupan layanan.`,
+      );
+    } catch (cause) {
+      setReportsError(`Status laporan tidak dapat dimuat ulang: ${errorMessage(cause)}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function proposeRecovery(alert: JourneyAlert) {
     if (!active || !alertIsCurrent(alert)) return;
     setBusy('recovery');
@@ -427,6 +554,8 @@ export function PassengerApp() {
         recoveryAt,
       );
       setRecovery(result);
+      setAcceptance(null);
+      acceptKey.current = null;
       localStorage.setItem(
         `${recoveryKey}.${active.journey_id}`,
         result.recovery_id,
@@ -443,8 +572,53 @@ export function PassengerApp() {
     }
   }
 
-  const displayed = selected ?? active;
-  const displayingActive =
+  async function acceptRecovery() {
+    if (!active || !recovery || recovery.original_journey_id !== active.journey_id)
+      return;
+    if (recovery.status !== 'COMPLETED' || !recovery.proposed_journey) {
+      setError(
+        'Tidak ada rute pengganti yang aman. Rencana awal tetap tidak berubah.',
+      );
+      return;
+    }
+    if (active.progress?.revision !== recovery.progress_revision) {
+      setError('Perjalanan sudah berubah sejak proposal ini. Minta recovery baru.');
+      return;
+    }
+    setBusy('recovery');
+    setError('');
+    try {
+      if (!acceptKey.current) acceptKey.current = crypto.randomUUID();
+      const result = await passengerApi.acceptRecovery(
+        recovery.recovery_id,
+        recovery.progress_revision,
+        acceptKey.current,
+      );
+      setAcceptance(result);
+      setRecovery((current) => ({
+        ...current!,
+        progress_revision: result.accepted_progress_revision,
+        proposed_journey: result.current_replacement_journey,
+        proposed_fingerprint: result.accepted_journey_fingerprint,
+      }));
+      const refreshed = await passengerApi.getJourney(active.journey_id);
+      if (refreshed.status !== 'ACTIVE') {
+        setError('Perjalanan tidak lagi aktif setelah recovery diterima.');
+        return;
+      }
+      setActive(refreshed);
+      setSelected(refreshed);
+      setMessage(
+        'Recovery diterima. Rencana awal tetap tersimpan; rute aktif sekarang mengikuti rute pengganti.',
+      );
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const displayed = selected ?? active;  const displayingActive =
     !!displayed && !!active && displayed.journey_id === active.journey_id;
   const completed = active?.progress?.completed_segment_count ?? 0;
   const currentLeg =
@@ -460,6 +634,8 @@ export function PassengerApp() {
   const currentBoarded = currentLeg !== null && boardedLeg === currentLeg.sequence;
   const currentAlighted = currentLeg !== null && alightedLeg === currentLeg.sequence;
   const easiestIds = easiestAmongShown(alternatives);
+  const reportTargets = active?.status === 'ACTIVE' ? remainingReportTargets(active, completed) : [];
+  const reportTargetValid = reportTargets.some((item) => item.key === reportTargetKey);
   const currentAlerts = alerts.filter(alertIsCurrent);
   const historicalAlerts = alerts.filter((alert) => !alertIsCurrent(alert));
   return (
@@ -907,6 +1083,148 @@ export function PassengerApp() {
               )}
             </>
           )}
+          {active?.status === 'ACTIVE' && (
+            <section className="operational-section" aria-labelledby="report-heading">
+              <div className="section-line">
+                <h2 id="report-heading">Laporkan kondisi</h2>
+                <span>{reports.length} tersimpan</span>
+              </div>
+              <p className="fine-print">
+                Laporan penumpang bersifat <strong>belum terverifikasi</strong> dan tidak otomatis menutup atau mengubah layanan. Laporan hanya tercatat pada perjalanan aktif dan tidak memerlukan lokasi perangkat.
+              </p>
+              {reportTargets.length === 0 ? (
+                <p className="empty-state">Tidak ada target sisa perjalanan yang dapat dilaporkan. Selesaikan atau mulai perjalanan baru untuk melaporkan kondisi.</p>
+              ) : (
+                <form onSubmit={(event) => void submitPassengerReport(event)} noValidate aria-describedby="report-help">
+                  <p id="report-help" className="fine-print">Pilih lokasi atau layanan pada sisa perjalanan. Laporan tersimpan di server dan dimuat ulang saat halaman di-refresh.</p>
+                  <label htmlFor="report-target">Lokasi atau layanan pada sisa perjalanan
+                    <select
+                      id="report-target"
+                      required
+                      value={reportTargetValid ? reportTargetKey : ''}
+                      onChange={(event) => {
+                        setReportTargetKey(event.target.value);
+                        reportKey.current = null;
+                        setError('');
+                      }}
+                      aria-invalid={reportTargetKey ? 'false' : undefined}
+                      aria-describedby="report-target-help"
+                    >
+                      <option value="">Pilih bagian perjalanan</option>
+                      {reportTargets.map((item) => (
+                        <option key={item.key} value={item.key}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <p id="report-target-help" className="fine-print">
+                    Hanya sisa bagian perjalanan yang ditampilkan. Provenance target terpilih: {reportTargets.find((t) => t.key === reportTargetKey)?.provenance ?? '— pilih target sisa perjalanan untuk melihat provenance'}
+                  </p>
+                  <label htmlFor="report-category">Kategori laporan
+                    <select
+                      id="report-category"
+                      value={reportCategory}
+                      onChange={(event) => {
+                        setReportCategory(event.target.value);
+                        reportKey.current = null;
+                      }}
+                    >
+                      <option value="CLEANLINESS">Kebersihan</option>
+                      <option value="CROWDING">Kepadatan</option>
+                      <option value="ACCESSIBILITY">Aksesibilitas</option>
+                      <option value="SAFETY">Keselamatan</option>
+                      <option value="SERVICE">Layanan</option>
+                      <option value="OTHER">Lainnya</option>
+                    </select>
+                  </label>
+                  <label htmlFor="report-observed-at">Waktu kejadian (WIB)
+                    <input
+                      id="report-observed-at"
+                      type="datetime-local"
+                      required
+                      value={reportObservedAt}
+                      onChange={(event) => {
+                        setReportObservedAt(event.target.value);
+                        reportKey.current = null;
+                      }}
+                    />
+                  </label>
+                  <label htmlFor="report-description">Keterangan
+                    <textarea
+                      id="report-description"
+                      required
+                      maxLength={2000}
+                      rows={4}
+                      value={reportDescription}
+                      onChange={(event) => {
+                        setReportDescription(event.target.value);
+                        reportKey.current = null;
+                      }}
+                      aria-describedby="report-description-help"
+                      aria-invalid={reportDescription.trim().length === 0 || reportDescription.length > 2000 ? undefined : 'false'}
+                      placeholder="Jelaskan kondisi yang Anda amati pada layanan atau lokasi terpilih"
+                    />
+                  </label>
+                  <p id="report-description-help" className="fine-print">{reportDescription.length}/2000 karakter · minimal 1 karakter, tanpa karakter kontrol.</p>
+                  <button className="primary-button full" type="submit" disabled={busy !== null || !reportTargetValid || !reportDescription.trim()}>
+                    {busy === 'report' ? 'Mengirim…' : 'Kirim laporan'}
+                  </button>
+                </form>
+              )}
+              {reportFormError && (
+                <p role="alert" className="feedback error">
+                  {reportFormError}
+                </p>
+              )}
+              {reportStatus && (
+                <p role="status" aria-live="polite" className="feedback">
+                  {reportStatus}
+                </p>
+              )}
+              <div className="report-list" aria-live="polite" aria-busy={reportsLoading ? 'true' : 'false'}>
+                {reportsLoading && (
+                  <p role="status" className="fine-print">
+                    Memuat laporan…
+                  </p>
+                )}
+                {reportsError && (
+                  <div className="feedback error" role="alert">
+                    <p>{reportsError}</p>
+                    <button type="button" className="text-button" onClick={() => active && void loadPersistedReports(active.journey_id)} disabled={reportsLoading}>
+                      Coba lagi
+                    </button>
+                  </div>
+                )}
+                {!reportsLoading && !reportsError && reports.length === 0 && (
+                  <p className="empty-state">Belum ada laporan untuk perjalanan ini. Laporan yang dikirim akan muncul di sini dan tetap ada setelah refresh.</p>
+                )}
+                {reports.map((report) => (
+                  <article className="alert-card" key={report.report_id} aria-label={`Laporan ${report.report_id}`}>
+                    <div className="alert-topline">
+                      <strong>
+                        {report.category} · {report.verification_status === 'REPORTED_UNVERIFIED' ? 'Belum diverifikasi' : 'Terverifikasi terkendali'}
+                      </strong>
+                      <span className={report.verification_status === 'REPORTED_UNVERIFIED' ? 'evidence simulated' : 'evidence'}>
+                        {report.verification_status === 'REPORTED_UNVERIFIED' ? 'Belum diverifikasi' : 'Terverifikasi'}
+                      </span>
+                    </div>
+                    <p>{report.description}</p>
+                    <small>
+                      Target: {report.mobility_entity_id} · {report.entity_type} · diamati {formatClock(report.observed_at)} · diterima {formatClock(report.received_at)}
+                    </small>
+                    <small className="fine-print">Laporan bukan konfirmasi penutupan layanan.</small>
+                    <button className="text-button" type="button" disabled={busy === 'report'} onClick={() => void refreshPassengerReport(report.report_id)}>
+                      Muat ulang status
+                    </button>
+                  </article>
+                ))}
+              </div>
+              <button type="button" className="text-button" onClick={() => active && void loadPersistedReports(active.journey_id)} disabled={reportsLoading || !active}>
+                Muat ulang daftar laporan
+              </button>
+            </section>
+          )}
           {active && (
             <section
               className="operational-section"
@@ -1049,6 +1367,32 @@ export function PassengerApp() {
                     Journey progress has changed since this proposal. Request a
                     fresh recovery before using it.
                   </p>
+                )}
+                {recovery.status === 'COMPLETED' && recovery.proposed_journey && (
+                  acceptance || recovery.accepted ? (
+                    <p className="feedback" role="status">
+                      Recovery accepted{' '}
+                      {formatClock(
+                        acceptance?.accepted_at ?? recovery.accepted_at!,
+                      )}. The original plan stays saved; your active journey now
+                      follows the repaired route.
+                    </p>
+                  ) : (
+                    <button
+                      type="button"
+                      className="primary-button full"
+                      disabled={
+                        busy !== null ||
+                        active.progress?.revision !==
+                          recovery.progress_revision
+                      }
+                      onClick={() => void acceptRecovery()}
+                    >
+                      {busy === 'recovery'
+                        ? 'Applying the repaired route...'
+                        : 'Use this repaired route'}
+                    </button>
+                  )
                 )}
                 <div className="comparison-grid">
                   <div>

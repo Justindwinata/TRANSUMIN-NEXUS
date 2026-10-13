@@ -14,6 +14,7 @@ import {
   Patch,
   Post,
   Sse,
+  UseGuards,
 } from '@nestjs/common';
 import type { MessageEvent } from '@nestjs/common';
 import { map, type Observable } from 'rxjs';
@@ -31,8 +32,10 @@ import type {
   RoutingContext,
 } from '../domain/journey.js';
 import { mapAlternative } from './journey.controller.js';
+import { PassengerServiceGuard } from './passenger-service.guard.js';
 
 @Controller('journeys')
+@UseGuards(PassengerServiceGuard)
 export class ActiveJourneyController {
   constructor(
     @Inject(ActiveJourneyService)
@@ -90,6 +93,7 @@ export class ActiveJourneyController {
       completed_segment_count?: number;
       current_segment_sequence?: number | null;
       recorded_at?: string;
+      accepted_recovery_id?: unknown;
     },
   ): Promise<Record<string, unknown>> {
     if (
@@ -106,6 +110,7 @@ export class ActiveJourneyController {
             completedLegCount: body.completed_segment_count,
             currentLegSequence: body.current_segment_sequence ?? null,
             recordedAt: body.recorded_at,
+            acceptedRecoveryId: routeId(body.accepted_recovery_id),
           }),
         ),
       );
@@ -119,7 +124,7 @@ export class ActiveJourneyController {
     @Param('journeyId') journeyId: string,
     @Param('legSequence') legSequence: string,
     @Headers('x-journey-owner') ownerRef: string | undefined,
-    @Body() body: { confirmed_at?: unknown },
+    @Body() body: { confirmed_at?: unknown; accepted_recovery_id?: unknown },
   ): Promise<Record<string, unknown>> {
     const sequence = Number(legSequence);
     if (!Number.isInteger(sequence) || sequence < 0)
@@ -135,6 +140,7 @@ export class ActiveJourneyController {
             ownerRef: requiredOwner(ownerRef),
             legSequence: sequence,
             confirmedAt,
+            acceptedRecoveryId: routeId(body.accepted_recovery_id),
           }),
         ),
       );
@@ -148,7 +154,7 @@ export class ActiveJourneyController {
     @Param('journeyId') journeyId: string,
     @Param('legSequence') legSequence: string,
     @Headers('x-journey-owner') ownerRef: string | undefined,
-    @Body() body: { confirmed_at?: unknown },
+    @Body() body: { confirmed_at?: unknown; accepted_recovery_id?: unknown },
   ): Promise<Record<string, unknown>> {
     const sequence = Number(legSequence);
     if (!Number.isInteger(sequence) || sequence < 0)
@@ -164,6 +170,7 @@ export class ActiveJourneyController {
             ownerRef: requiredOwner(ownerRef),
             legSequence: sequence,
             confirmedAt,
+            acceptedRecoveryId: routeId(body.accepted_recovery_id),
           }),
         ),
       );
@@ -241,13 +248,16 @@ export class ActiveJourneyController {
 
 function mapActiveJourney(journey: ActiveJourney): Record<string, unknown> {
   return {
-    ...mapAlternative(journey.originalPlan),
+    ...mapAlternative(journey.currentPlan ?? journey.originalPlan),
     journey_id: journey.journeyId,
     plan_journey_id: journey.originalPlan.journeyId,
     status: journey.lifecycleStatus,
     activated_at: journey.activatedAt,
     completed_at: journey.completedAt,
     plan_fingerprint: journey.planFingerprint,
+    accepted_recovery_id: journey.acceptedRecoveryId ?? null,
+    accepted_before_segment_count: journey.acceptedBeforeLegCount ?? null,
+    original_plan: mapAlternative(journey.originalPlan),
     progress: mapProgress(journey),
     dependencies: journey.dependencies.map((dependency) => ({
       dependency_id: dependency.dependencyId,
@@ -583,7 +593,14 @@ function mapActiveJourneyError(error: unknown): Error {
     return new NotFoundException(error.message);
   if (error.code === 'OWNER_SCOPE_MISMATCH')
     return new ForbiddenException(error.message);
-  if (error.code === 'ACTIVATION_CONFLICT')
+  if (error.code === 'ACTIVATION_CONFLICT' || error.code === 'STALE_ROUTE')
     return new ConflictException(error.message);
   return new BadRequestException(error.message);
+}
+
+function routeId(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
+    throw new BadRequestException('accepted_recovery_id must be a UUID or null.');
+  return value;
 }

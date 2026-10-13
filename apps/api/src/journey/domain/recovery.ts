@@ -79,6 +79,24 @@ export type RecoveryProposal = Readonly<{
   metrics: RecoveryMetrics;
 }>;
 
+/**
+ * Additive acceptance lineage. The immutable original itinerary in
+ * journey.journey_plan/original_plan_json is never rewritten; this record pins
+ * the accepted replacement/continuation the traveller is now following.
+ */
+export type RecoveryAcceptance = Readonly<{
+  recoveryId: string;
+  activeJourneyId: string;
+  ownerRef: string;
+  acceptedProgressRevision: number;
+  acceptedImpactId: string;
+  acceptedStateTransitionId: string;
+  acceptedMobilityProjectionVersion: string;
+  acceptedJourneyFingerprint: string;
+  acceptedJourney: JourneyAlternative;
+  acceptedAt: string;
+}>;
+
 export class RecoveryError extends Error {
   constructor(
     readonly code:
@@ -86,7 +104,10 @@ export class RecoveryError extends Error {
       | 'IMPACT_NOT_CURRENT'
       | 'INVALID_RECOVERY_ANCHOR'
       | 'NO_RECOVERY_PATH'
-      | 'IDEMPOTENCY_CONFLICT',
+      | 'IDEMPOTENCY_CONFLICT'
+      | 'RECOVERY_NOT_ACCEPTABLE'
+      | 'RECOVERY_STALE'
+      | 'RECOVERY_CANDIDATE_BLOCKED',
     message: string,
   ) {
     super(message);

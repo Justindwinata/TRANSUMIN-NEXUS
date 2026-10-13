@@ -19,6 +19,13 @@ const evidencePath = path.join(
 );
 const snapshotId = '43fb9a29-0c89-5c72-8826-e3dc2adcfb1f';
 
+function serviceToken(): string {
+  const token = process.env.PASSENGER_SERVICE_TOKEN;
+  if (!token || token.length < 32)
+    throw new Error('PASSENGER_SERVICE_TOKEN is required for protected passenger routes.');
+  return token;
+}
+
 type ApiJourney = Readonly<{
   journey_id: string;
   status: string;
@@ -227,6 +234,7 @@ async function request<T>(
     ...init,
     headers: {
       'content-type': 'application/json',
+      'x-passenger-service-token': serviceToken(),
       ...(owner === null ? {} : { 'x-journey-owner': owner }),
     },
   });

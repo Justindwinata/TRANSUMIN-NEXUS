@@ -27,7 +27,10 @@ import type {
   JourneyPlanResult,
 } from '../domain/journey.js';
 import { JourneyRoutingError } from '../domain/journey.js';
-import type { RecoveryProposal } from '../domain/recovery.js';
+import type {
+  RecoveryAcceptance,
+  RecoveryProposal,
+} from '../domain/recovery.js';
 import { RecoveryError } from '../domain/recovery.js';
 
 @Injectable()
@@ -49,6 +52,26 @@ export class RecoveryService {
     recoveryAt: string;
   }): Promise<RecoveryProposal> {
     const totalStarted = performance.now();
+    const existing = await this.repository.findByIdempotency(
+      input.ownerRef,
+      input.idempotencyKey,
+    );
+    if (existing !== null) {
+      // Receipt replay precedes current-state gates: an accepted/completed
+      // request stays replayable after later progress or impact changes.
+      // Same-key divergent payload (incl. progressed state revision) conflicts
+      // with the recorded receipt rather than inventing a second plan row.
+      if (
+        existing.activeJourneyId !== input.activeJourneyId ||
+        existing.impactId !== input.impactId ||
+        existing.recoveryAt !== input.recoveryAt
+      )
+        throw new RecoveryError(
+          'IDEMPOTENCY_CONFLICT',
+          'The idempotency key belongs to different recovery input.',
+        );
+      return existing;
+    }
     const journey = await this.journeys.get(
       input.activeJourneyId,
       input.ownerRef,
@@ -63,23 +86,6 @@ export class RecoveryService {
         'IMPACT_NOT_CURRENT',
         'Recovery requires an unresolved impact on a currently relevant journey dependency.',
       );
-    const existing = await this.repository.findByIdempotency(
-      input.ownerRef,
-      input.idempotencyKey,
-    );
-    if (existing !== null) {
-      if (
-        existing.activeJourneyId !== journey.journeyId ||
-        existing.impactId !== impact.impactId ||
-        existing.progressRevision !== journey.progress.revision ||
-        existing.recoveryAt !== input.recoveryAt
-      )
-        throw new RecoveryError(
-          'IDEMPOTENCY_CONFLICT',
-          'The idempotency key belongs to different recovery input.',
-        );
-      return existing;
-    }
     if (input.recoveryAt !== journey.progress.recordedAt)
       throw new RecoveryError(
         'INVALID_RECOVERY_ANCHOR',
@@ -374,7 +380,7 @@ export class RecoveryService {
     } as const;
     const recoveryId = stableUuid(
       'state-aware-recovery',
-      `${journey.journeyId}:${impact.impactId}:${journey.progress.revision}:${input.recoveryAt}`,
+      `${journey.journeyId}:${impact.impactId}:${journey.progress.revision}:${input.recoveryAt}:${input.idempotencyKey}`,
     );
     const proposal: RecoveryProposal = {
       recoveryId,
@@ -422,6 +428,120 @@ export class RecoveryService {
 
   get(recoveryId: string, ownerRef: string): Promise<RecoveryProposal> {
     return this.repository.get(recoveryId, ownerRef);
+  }
+
+  /**
+   * Owner-only acceptance of the current COMPLETED proposal. All freshness and
+   * candidate revalidation runs BEFORE the transaction: server-side state calls
+   * and OTP routing cannot run inside the DB transaction, while the repository
+   * re-checks revision/impact under row locks before the atomic pointer write.
+   */
+  async accept(input: {
+    recoveryId: string;
+    ownerRef: string;
+    idempotencyKey: string;
+    progressRevision: number;
+    acceptedAt: string;
+  }): Promise<RecoveryAcceptance> {
+    if (!Number.isInteger(input.progressRevision))
+      throw new RecoveryError(
+        'RECOVERY_STALE',
+        'progress_revision must identify the journey revision the proposal was computed for.',
+      );
+    // Receipt replay precedes proposal-state and freshness gates: an already
+    // accepted request is idempotent even after later progression or impact
+    // lifecycle changes. Key mismatch still conflicts.
+    const existing = await this.repository.findAcceptanceByIdempotency(
+      input.ownerRef,
+      input.idempotencyKey,
+    );
+    if (existing !== null) {
+      if (
+        existing.recoveryId !== input.recoveryId ||
+        existing.acceptedProgressRevision !== input.progressRevision
+      )
+        throw new RecoveryError(
+          'IDEMPOTENCY_CONFLICT',
+          'The acceptance idempotency key belongs to a different acceptance request.',
+        );
+      return existing;
+    }
+    const proposal = await this.repository.get(
+      input.recoveryId,
+      input.ownerRef,
+    );
+    if (proposal.status !== 'COMPLETED' || proposal.proposedJourney === null)
+      throw new RecoveryError(
+        'RECOVERY_NOT_ACCEPTABLE',
+        'Only a completed proposal with a proposed journey can be accepted.',
+      );
+    // Duplicate of prior success under another key conflicts, not replays:
+    // prevents resurrecting a stale/expired proposal through a fresh request.
+    const accepted = await this.repository.findAcceptance(
+      input.recoveryId,
+      input.ownerRef,
+    );
+    if (accepted !== null) {
+      if (accepted.acceptedProgressRevision !== input.progressRevision)
+        throw new RecoveryError(
+          'RECOVERY_STALE',
+          'The journey progressed or the proposal targets an older revision; request a fresh recovery.',
+        );
+      throw new RecoveryError(
+        'IDEMPOTENCY_CONFLICT',
+        'This recovery proposal was already accepted under a different idempotency key.',
+      );
+    }
+    const journey = await this.journeys.get(
+      proposal.activeJourneyId,
+      input.ownerRef,
+    );
+    if (
+      journey.progress.revision !== input.progressRevision ||
+      journey.progress.revision !== proposal.progressRevision
+    )
+      throw new RecoveryError(
+        'RECOVERY_STALE',
+        'The journey progressed or the proposal targets an older revision; request a fresh recovery.',
+      );
+    const impact = await this.repository.getCurrentImpact(
+      proposal.impactId,
+      proposal.activeJourneyId,
+      input.ownerRef,
+    );
+    if (
+      impact === null ||
+      impact.stateTransitionId !== proposal.stateTransitionId ||
+      impact.mobilityEntityId !== proposal.triggeringEntityId
+    )
+      throw new RecoveryError(
+        'RECOVERY_STALE',
+        'The triggering impact is no longer current on this journey.',
+      );
+    const validation = await this.planner.validateOperationalState(
+      proposal.proposedJourney.legs,
+    );
+    if (validation.blockedEntityIds.length > 0)
+      throw new RecoveryError(
+        'RECOVERY_CANDIDATE_BLOCKED',
+        'The proposed replacement now depends on a currently unavailable canonical entity; request a fresh recovery.',
+      );
+    return this.repository.accept({
+      recoveryId: proposal.recoveryId,
+      ownerRef: proposal.ownerRef,
+      idempotencyKey: input.idempotencyKey,
+      progressRevision: input.progressRevision,
+      acceptedJourney: proposal.proposedJourney,
+      acceptedJourneyFingerprint: proposal.proposedFingerprint ?? '',
+      acceptedAt: input.acceptedAt,
+    });
+  }
+
+  findAcceptance(
+    recoveryId: string,
+    ownerRef: string,
+  ): Promise<RecoveryAcceptance | null> {
+    return this.repository.findAcceptance(recoveryId, ownerRef);
   }
 }
 

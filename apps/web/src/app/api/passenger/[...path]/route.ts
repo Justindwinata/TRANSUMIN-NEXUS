@@ -8,7 +8,8 @@ const allowed = [
   /^transit\/places$/,
   /^journeys\/plan$/,
   /^journeys\/[0-9a-f-]{36}(?:\/(?:activate|progress|status|alerts(?:\/stream)?|boarding\/\d+|alighting\/\d+))?$/i,
-  /^recoveries(?:\/[0-9a-f-]{36})?$/i,
+  /^recoveries(?:\/[0-9a-f-]{36}(?:\/accept)?)?$/i,
+  /^passenger-reports(?:\/[0-9a-f-]{36})?$/i,
 ];
 
 const SESSION_COOKIE = 'transumin_proto_session';
@@ -64,6 +65,13 @@ function ownerFor(
 async function forward(request: NextRequest, context: Context) {
   const { path } = await context.params;
   const resource = path.join('/');
+  // CONTROLLED verification never via passenger proxy; only direct internal endpoint.
+  if (resource === 'controlled/passenger-reports' || resource.startsWith('controlled/passenger-reports/')) {
+    return NextResponse.json(
+      { error: { code: 'FORBIDDEN', message: 'Controlled operations are not available via passenger proxy.' } },
+      { status: 403 },
+    );
+  }
   if (!allowed.some((pattern) => pattern.test(resource))) {
     return NextResponse.json(
       { error: { code: 'NOT_FOUND', message: 'Unknown passenger resource.' } },
@@ -130,6 +138,13 @@ async function forward(request: NextRequest, context: Context) {
     resource === 'recoveries' && request.method === 'POST' ? 120_000 : 30_000;
   const upstreamHeaders = new Headers();
   upstreamHeaders.set('accept', isStream ? 'text/event-stream' : 'application/json');
+  const serviceToken = process.env.PASSENGER_SERVICE_TOKEN;
+  if (!serviceToken || serviceToken.length < 32)
+    return NextResponse.json(
+      { error: { code: 'SERVICE_IDENTITY_UNAVAILABLE', message: 'Passenger service identity is unavailable.' } },
+      { status: 503 },
+    );
+  upstreamHeaders.set('x-passenger-service-token', serviceToken);
   upstreamHeaders.set('x-journey-owner', owner);
   const lastEventId = request.headers.get('last-event-id');
   if (isStream && lastEventId) upstreamHeaders.set('last-event-id', lastEventId);
@@ -153,7 +168,8 @@ async function forward(request: NextRequest, context: Context) {
   }
   try {
     const upstream = new URL(`${apiBase}/${resource}`);
-    if (resource === 'transit/places') upstream.search = request.nextUrl.search;
+    if (resource === 'transit/places' || resource === 'passenger-reports')
+      upstream.search = request.nextUrl.search;
     const response = await fetch(upstream, {
       method: request.method,
       headers: upstreamHeaders,

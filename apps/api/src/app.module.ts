@@ -7,6 +7,7 @@ import { SpatialModule } from './spatial/spatial.module.js';
 import { TransitModule } from './transit/transit.module.js';
 import { DisruptionModule } from './disruption/disruption.module.js';
 import { JourneyModule } from './journey/journey.module.js';
+import { PassengerReportingModule } from './passenger-reporting/passenger-reporting.module.js';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { JourneyModule } from './journey/journey.module.js';
     MobilityTwinModule,
     DisruptionModule,
     JourneyModule,
+    PassengerReportingModule,
   ],
 })
 export class AppModule {}

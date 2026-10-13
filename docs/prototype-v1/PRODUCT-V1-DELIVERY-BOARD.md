@@ -1,72 +1,95 @@
 # Product V1 delivery board
 
-Updated: 2026-10-12
+Updated: 2026-10-13. Classification: `PROTOTYPE_V1_PARTIAL`. Publication pending parent commit.
 
 ## Provenance
 
-This repository is a sanitized product-publication lineage. It is **not** the original research Git history.
+Repository is sanitized product-publication lineage, not original research Git history.
 
-- Source snapshot: local historical branch `prototype-v1-generalized-journey` at `de3677273292398ffeb8af7bf681480bdc3379a2`, plus the five reviewed V1-1 working-tree files.
+- Source snapshot: historical branch `prototype-v1-generalized-journey` at `de3677273292398ffeb8af7bf681480bdc3379a2`, plus reviewed V1-1 working-tree files.
 - Frozen D12 source baseline: `de3677273292398ffeb8af7bf681480bdc3379a2`.
-- Private recovery archive: retained outside this repository under `.transum-r0a-persistent`; it contains a verified complete Git bundle and source manifest.
-- Sensitive historical credential-bearing revisions are intentionally not included in this lineage.
-- Runtime OTP graph, JAR, JRE, databases, secrets, raw/processed datasets, and build outputs are not versioned here.
+- Private recovery archive remains outside repository under `.transum-r0a-persistent`.
+- Runtime OTP graph, JAR, JRE, databases, secrets, raw/processed datasets, logs, screenshots, and build outputs are not versioned here.
+- No complete product bundle secret-scan evidence was reviewed for this checkpoint.
 
 ## Current milestone
 
-M2 complete. M3 read-only interactive map acceptance PASS; full snapshot mutation E2E BLOCKED_BY_ENVIRONMENT. Tier A lightweight isolated Active Journey acceptance PASS; M4 browser GPS/boarding scope and M5–M7 remain incomplete.
+Local milestone harnesses passed within recorded boundaries. They do not establish full Product V1 acceptance.
 
-## Verified capabilities
+| Milestone | Status | Executed evidence | Boundary |
+| --- | --- | --- | --- |
+| M0 Publication lineage | NOT_VERIFIED | Historical remote/sanitization claims exist | Current bundle secret scan absent; publication pending parent commit |
+| M1 Real API/runtime | PASS | API test evidence and real OTP/API browser harnesses exited 0 | Local prototype runtime only |
+| M2 Generalized planning | PASS | `pnpm acceptance:v1:multi-od`, exit 0 | Corridor sample; no POI/general regional proof |
+| M3 Interactive map | PASS | M7 candidate map/timeline browser case passed | Full mutation-map directive scope not independently accepted |
+| M4 Active Journey/GPS/progress | PASS | M7 active journey and boarding/alighting cases; GPS denial/unsupported fallback, exit 0 | No GPS position persistence or auto-boarding |
+| M5 Passenger reporting | PASS | `m5-v2.log`: 22/22, exit 0 | Controlled review only; alerts `SIMULATED` |
+| M6 Recovery acceptance | PASS | `m6-v4.log`: 13/13 including replay and close, exit 0 | Executed `COMPLETED` recovery; NO_PATH not exercised |
+| M7 Full directive acceptance | NOT_VERIFIED | `m7-second.log`: local integrated harness 20/20, exit 0, `COMPLETED` branch | Harness is not full 20-step search/preference directive workflow; Tier A continuation not wired to standard runner |
 
-- Passenger journey search UI and typed API proxy.
-- OTP-backed planner and current stop/station search implementation.
-- V1-1 route preferences: balanced, fastest, fewest transfers, least walking.
-- Subset-scoped, tie-aware `easiestAmongShown()`; fare remains unknown.
-- Existing controlled Active Journey, targeted alert, and state-aware recovery implementation retained.
-- Isolated product database bootstrap with full accepted canonical ingestion (Phase 1 TransJakarta GTFS, Phase 2A spatial, Phase 2B base snapshot, Phase 4B routing identities).
+## Current acceptance summary
 
-## Local evidence (product workspace, 2026-10-12)
+Full V01–V20 and S01–S14 expected/observed/input/source/command/exit/provenance/limits matrices live in `docs/prototype-v1/PROTOTYPE-V1-CAPABILITY-AND-COVERAGE.md`.
 
-- M0 `GITHUB_PRODUCT_BASELINE`: PASS. Remote `main`/`prototype-v1` at `e8092a375af0ab0c55c83b763fc5f3f2150edc97`; sanitized scan (credentials, tokens, private keys, absolute user paths, >5 MiB blobs): clean; old history unreachable from remote.
-- Isolated DB bootstrap (all commands re-run from tracked manifests; raw/processed artifacts checksum-verified first):
-  - `pnpm data:transjakarta:validate|ingest|verify`: PASS (240 routes, 7,819 stops, idempotent `ALREADY_IMPORTED`).
-  - `pnpm data:spatial:validate`: PASS with `NODE_OPTIONS=--max-old-space-size=8192` (default heap OOMs on the 419 MB OPL walking-graph build; recorded as known limitation). Counts match tracked manifest exactly.
-  - `pnpm data:spatial:verify`: PASS (947,974 nodes, 2,315,442 edges, 8,188 resolved endpoints).
-  - `pnpm data:twin:snapshot`: PASS; snapshot `43fb9a29-0c89-5c72-8826-e3dc2adcfb1f`, content hash matches tracked Phase-2 manifest.
-  - `pnpm data:phase4bb:identity`: PASS (125 stations, 65 routes, dataset `19dde3d7-a359-5457-bea5-a6db1704543d`).
-  - `pnpm data:phase4ba:validate`: PASS; regenerated manifest SHA-256 `1f493716d20ad5ffa2e3628ece67f2511235f2abfacef4cd7b2b2af9f73dfb77` identical to accepted value.
-- M1 real API: `health/ready` PASS (PostGIS 3.6.4); real OD plan POST `/api/v1/journeys/plan` returns 3 real OTP alternatives (MIKROTRANS+WALK+KRL etc.); invalid coordinates → `INVALID_PARAMETER`; ocean OD → truthful `NO_ROUTE`; unknown snapshot → 503 without detail leak.
-- `pnpm check:integration`: PASS 31/31 against isolated product DB (self-cleaning fixtures).
-- `pnpm acceptance:v1:multi-od`: PASS against real OTP/API/DB. Place-search-resolved Bogor–Cilebut, Kelapa Gading–Manggarai, and Lebak Bulus–Fatmawati corridors return scheduled alternatives; `FASTEST`, `FEWEST_TRANSFERS`, and `LEAST_WALKING` first-option invariants hold. Manggarai–Kemang uses an explicitly approximate coordinate (no fabricated POI) and returns 3 alternatives.
-- `pnpm --filter @transum-in/web test` (smoke via web proxy): PASS — real OTP plan, activation, progress immutability.
-- `pnpm --filter @transum-in/web test:browser:e2e` (Playwright/Chrome, two independent browser contexts, real OTP + DB): PASS — targeted alert isolation (1 affected / 0 unrelated), recovery `COMPLETED` with blocked-entity avoidance, SSE reconnect; screenshots in ignored `data/processed/product-p1r-browser/`.
-- `pnpm typecheck`, `pnpm lint`, `pnpm openapi:validate`, `pnpm api:types:check`: PASS.
-- Tier A lightweight isolated acceptance: `pnpm --filter @transum-in/api data:lightweight-acceptance` PASS — UUID scratch `tnx_lightweight_*` created on the existing product Postgres (same container, 1 GiB reserve preflight), migrations + real `journey.integration.spec.ts` (real domain services, controlled synthetic fixtures) against that scratch only; verified datname/OID/owner/marker/sessions=0 before drop; peak upper bound ≈13.5 MiB. Routing is explicitly NOT exercised by this tier.
-- M3 interactive MapLibre GL browser acceptance (read-only real flow, `pnpm --filter @transum-in/web test:browser:map`, desktop Chrome against dev web 3002 + real API/OTP/product DB): PASS — plan HTTP 201, 2 alternatives, geometry `[lon,lat]` bounds + ≤10k points validated, MapLibre canvas/keyboards selection (`aria-pressed`)/pan/zoom wheel+drag, markers 4, attribution, walking `UNVERIFIED_SCHEMATIC`, screenshots `data/processed/product-v1-map-browser/`. Active-journey mutation E2E remains blocked below.
-- M3 leg-geometry contract (partial): `JourneySegment.geometry` nullable GeoJSON `LineString` (`docs/api/openapi-v1.yaml`), populated from OTP `legGeometry` encoded polyline; `pnpm --filter @transum-in/api test` PASS 85/85 including decoder round-trip, null-when-absent, and truncated-input rejection; `active-journey.controller.ts` re-validates stored geometry on read.
-- M3 static map render (prototype, browser-verified via desktop review pane): `/` journey detail renders OSM slippy tiles, per-segment mode-coloured polylines (dashed walk), Origin/Boarding/Alighting/Transfer/Destination markers, `© OpenStreetMap contributors` + provider attribution; route follows real geometry rather than a straight line. Interactive pan/zoom and MapLibre conformance remain incomplete, so M3 is NOT VERIFIED.
-- Restored tracked test fixture `data/fixtures/petabencana/recorded-flood-area-minimized.json` (`RECORDED_MINIMIZED_NOT_LIVE` sample) required by `operational-data.spec.ts`; it was excluded from the earlier publication filter, which silently broke one API test.
-- OTP runtime re-provisioned from accepted local artifacts: graph `ad9fdd3e…331574`, JAR `8acd2808…a7990`, JRE `5b02bcc9…37e1b`; OTP 2.10.0 health PASS on `127.0.0.1:8080`.
-- Protected volumes (`transum-in-nexus-postgres-data`, `transumin-foundation_transumin_postgres_data`) untouched; product uses new volume `transum-in-nexus-product-postgres-data` on port 5435.
-- A locally generated product DB credential was accidentally printed in one agent transcript; it was rotated immediately via `ALTER ROLE` and never committed. `.env` is ignored with mode 0600.
+Key corrections:
 
-## Acceptance state
+- V20 and S14: `NOT_VERIFIED`. Local integrated 20-case PASS does not silently redefine full directive acceptance.
+- S01: `NOT_VERIFIED`. Executed corridor coordinates were approximately `-6.108205, 106.89982` → `-6.205627, 106.822295` (Kelapa Gading/Gambir area), not Manggarai–Kemang.
+- S09: `NOT_VERIFIED`. NO_PATH branch exists but reviewed run completed recovery; refusal branch was not exercised.
+- V19: `NOT_VERIFIED`. Session/owner/reviewer checks passed, but complete bundle secret-scan evidence is absent and production auth remains open.
+- V01: `BLOCKED_BY_DATA`; V15: `BLOCKED_BY_DATA`; V16: `BLOCKED_BY_DATA`.
 
-- M0: PASS (remote verified).
-- M1: PASS (real API + isolated DB + OTP + browser smoke).
-- M2 (generalized planning): PASS (`pnpm acceptance:v1:multi-od`; place-search-resolved named corridors plus one approximate-coordinate destination; preference-ranking invariants verified; evidence JSON in ignored `data/processed/acceptance/`).
-- M3 (interactive map): NOT VERIFIED — real OTP geometry, static slippy tiles, markers, attribution, and textual itinerary render in browser; required MapLibre GL interaction (pan/zoom), full textual-equivalence audit, and geometry-aware browser acceptance remain incomplete.
-- M4–M7: NOT_RUN.
-- V01–V20 and S01–S14: retain statuses in `PROTOTYPE-V1-CAPABILITY-AND-COVERAGE.md`; V04 is NOT VERIFIED, V15 remains BLOCKED pending Phase 4A-R walking-shape validation.
+## Executed local evidence
 
-## Known gaps
+| Evidence | Status | Command / log | Exit | Observed boundary |
+| --- | --- | --- | --- | --- |
+| M5 browser acceptance | PASS | `m5-v2.log` | 0 | 22/22; owner isolation, report boundary, controlled review, targeted simulated alert, reload, SSE reconnect |
+| M6 browser acceptance | PASS | `m6-v4.log` | 0 | 13/13; real OTP recovery, accept, replay, stale/foreign negatives, continuation, controlled close |
+| M7 integrated harness | PASS | `node scripts/passenger-integrated-m7-acceptance.mjs`; `m7-second.log` | 0 | 20/20 local cases; `COMPLETED` branch only |
+| GPS browser acceptance | PASS | `node scripts/gps-acceptance.mjs`; `gps-final.log` | 0 | GPS default OFF; denied and simulated unsupported fallback; no auto-boarding, persistence, or location network request |
+| API unit suite | PASS | `pnpm --filter @transum-in/api test`; recorded API evidence | 0 | 101/101 per checkpoint record |
+| Tier A lightweight | PASS | `tierA-m7.log` | 0 | M6 recovery acceptance 6/6; controlled synthetic fixtures; routing not tested; continuation spec not wired to standard runner |
+| Web production build | PASS | `pnpm --filter @transum-in/web build`; `web-build-production.log` | 0 | Passed without `NODE_ENV` override |
+| Root-env web build | FAIL | `web-build-final.log` | 1 | Root environment supplied nonstandard `NODE_ENV=development`; prerender failed; not production-build evidence |
+| Bundle secret scan | NOT_RUN | No reviewed command/log | — | V19 and publication gate remain open |
+| NO_PATH browser branch | NOT_RUN | M7 run selected `COMPLETED` | — | S09 remains unverified |
+| Full directive workflow | NOT_RUN | No separate full search/preference directive run | — | M7/V20/S14 remain unverified |
 
-- GPS consent/OS-cached position, explicit boarding/alighting confirmation UI, and passenger-report submission boundary are not yet implemented.
-- Map prototype is static slippy-tile + SVG overlay, not MapLibre GL; pan/zoom, MapLibre conformance, interaction tests, and geometry-aware browser acceptance are pending. M3 is not accepted.
-- POI search beyond stops/stations remains blocked pending approved source/version/license/attribution and ingest scope.
-- Spatial `validate`/`ingest` require ~8 GiB Node heap for the OPL walking-graph build.
-- Local DB credential rotation history above is recorded for security traceability.
+Logs above are local temporary evidence under `/private/var/folders/9w/27j9sy2n31scrtpmj0tmgwl40000gn/T/opencode/`; they are not repository artifacts.
 
-## Next action
+## Migration record
 
-Implement MapLibre GL interactive map on verified leg-geometry contract (pan/zoom, textual-equivalence audit, geometry-aware browser acceptance), then re-verify M3 with reproducible browser evidence.
+- `202610120003_passenger_reporting`: applied for M5.
+- `202610130001_recovery_acceptance_lineage`: accidentally applied early before original Tier A acceptance was recorded. Record as deviation; do not relabel it as originally accepted sequence.
+- `202610130002_active_journey_current_itinerary`: authorized and applied. Final function verification completed.
+- No newer migration deviation is proven by reviewed evidence.
+- No DB operation was performed for this documentation update.
+
+## Capability boundaries
+
+- Place search covers accepted transit stops/stations, not general POIs or addresses.
+- Kemang Village/Lippo Mall Kemang remains unsupported without accepted source, version, license, attribution, and ingest authorization.
+- OTP evidence is scheduled/frequency-derived research routing, not realtime service truth.
+- Fare remains `UNKNOWN`; no cheapest recommendation claim.
+- Walking remains `UNVERIFIED_SCHEMATIC` pending Phase 4A-R validation.
+- External provider availability, fare, ETA, booking, vehicle tracking, and deep links remain unverified.
+- Passenger reports remain `REPORTED_UNVERIFIED`; controlled reviewer output and disruption evidence remain `SIMULATED`.
+- Prototype signed sessions and owner isolation are not production authentication acceptance.
+
+## Reproduction commands
+
+```sh
+pnpm acceptance:v1:multi-od
+node scripts/passenger-integrated-m7-acceptance.mjs
+node scripts/gps-acceptance.mjs
+pnpm --filter @transum-in/api test
+pnpm --filter @transum-in/web build
+```
+
+Required missing evidence:
+
+1. Execute full directive search/preference workflow without mapping smaller harness cases onto it.
+2. Exercise NO_PATH refusal branch and retain exact input/output evidence.
+3. Run and retain complete publication-bundle secret scan.
+4. Wire continuation specification into standard Tier A runner and execute it.
+5. Resolve data/authorization blockers before claiming POI, walking validity, or provider handoff.

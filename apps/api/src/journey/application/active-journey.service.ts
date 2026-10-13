@@ -73,6 +73,7 @@ export class ActiveJourneyService {
     completedLegCount: number;
     currentLegSequence: number | null;
     recordedAt: string;
+    acceptedRecoveryId?: string | null;
   }): Promise<ActiveJourney> {
     assertOwnerRef(input.ownerRef);
     assertIsoDate(input.recordedAt, 'recordedAt');
@@ -99,6 +100,7 @@ export class ActiveJourneyService {
       completedLegCount: input.completedLegCount,
       currentLegSequence: input.currentLegSequence,
       recordedAt: input.recordedAt,
+      acceptedRecoveryId: input.acceptedRecoveryId,
     });
   }
 
@@ -107,6 +109,7 @@ export class ActiveJourneyService {
     ownerRef: string;
     legSequence: number;
     confirmedAt: string;
+    acceptedRecoveryId?: string | null;
   }): Promise<ActiveJourney> {
     assertOwnerRef(input.ownerRef);
     assertConfirmation(input);
@@ -118,6 +121,7 @@ export class ActiveJourneyService {
     ownerRef: string;
     legSequence: number;
     confirmedAt: string;
+    acceptedRecoveryId?: string | null;
   }): Promise<ActiveJourney> {
     assertOwnerRef(input.ownerRef);
     assertConfirmation(input);

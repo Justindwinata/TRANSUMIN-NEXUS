@@ -32,6 +32,10 @@ export type ActiveJourney = Readonly<{
   lifecycleStatus: ActiveJourneyLifecycle;
   planFingerprint: string;
   originalPlan: JourneyAlternative;
+  /** Current route; after acceptance combines immutable completed history and rebased accepted suffix. */
+  currentPlan?: JourneyAlternative;
+  acceptedRecoveryId?: string | null;
+  acceptedBeforeLegCount?: number | null;
   activatedAt: string;
   completedAt: string | null;
   progress: JourneyProgress;
@@ -69,7 +73,8 @@ export class ActiveJourneyError extends Error {
       | 'ACTIVATION_CONFLICT'
       | 'INVALID_PROGRESS'
       | 'INVALID_BOARDING'
-      | 'JOURNEY_NOT_ACTIVE',
+      | 'JOURNEY_NOT_ACTIVE'
+      | 'STALE_ROUTE',
     message: string,
   ) {
     super(message);
