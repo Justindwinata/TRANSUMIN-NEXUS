@@ -7,7 +7,7 @@ Classification: `PROTOTYPE_V1_PARTIAL` (unchanged; core workflow real and verifi
 - Branch: `prototype-v1`
 - R2 base: `04376a0978a4decc7f0e14c48bf95d6ab1e9e284`
 - R3-1 (harnesses): `2e758dd83e4c34f8c78b6f03374a0e7738f4f2da`
-- R3-2 (ledgers + durable evidence index): `822f4e295cf854bad2df3fe3f7f944e0c5cd83b7`.
+- R3-2 (ledgers + durable evidence index): tip of `prototype-v1` after this commit; confirm with `git ls-remote origin prototype-v1`.
 - Remote: `https://github.com/Justindwinata/TRANSUMIN-NEXUS.git` (PRIVATE; verified `gh repo view` → `PRIVATE`).
 
 Deploy surface unchanged: web `127.0.0.1:3000`, API `127.0.0.1:3001`, OTP `127.0.0.1:8080`, PostgreSQL/PostGIS `127.0.0.1:5435` (`transum_in_nexus_product`); snapshot `43fb9a29-0c89-5c72-8826-e3dc2adcfb1f`, service date `2026-10-02`, graph `ad9fdd3e…331574`.
