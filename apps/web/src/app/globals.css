@@ -679,6 +679,18 @@ button:disabled {
   font-size: 0.92rem;
   margin: 6px 0 2px;
 }
+.external-handoff {
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+}
+.external-handoff-link {
+  color: var(--text);
+  text-decoration: underline;
+  font-size: 0.9rem;
+}
 .progress-actions .gps-consent {
   border: 1px dashed var(--border);
   border-radius: 12px;

@@ -1342,6 +1342,34 @@ export function PassengerApp() {
                       </button>
                     </div>
                   </div>
+                  {currentLeg && (
+                    <div className="external-handoff">
+                      <p className="fine-print">
+                        Lanjutkan dengan transportasi eksternal (buka situs
+                        resmi; pemesanan tetap di aplikasi penyedia, koordinat
+                        tidak dikirim otomatis):
+                      </p>
+                      {[
+                        { name: 'Gojek', href: 'https://gojek.com' },
+                        { name: 'Grab', href: 'https://grab.com' },
+                        {
+                          name: 'Bluebird',
+                          href: 'https://bluebirdgroup.com/',
+                        },
+                      ].map((provider) => (
+                        <a
+                          key={provider.name}
+                          className="external-handoff-link"
+                          href={provider.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          data-handoff={provider.name.toLowerCase()}
+                        >
+                          Lanjutkan dengan {provider.name}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                   {journeyFinished ? (
                     <p className="feedback" role="status">
                       Selesaikan Perjalanan — perjalanan ini sudah selesai.

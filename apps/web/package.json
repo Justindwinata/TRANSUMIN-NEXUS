@@ -13,6 +13,7 @@
     "test:browser:map": "node scripts/journey-map-browser-acceptance.mjs",
     "test:browser:r4": "node scripts/passenger-r4-f01-f02-acceptance.mjs",
     "test:browser:r4:nav": "node scripts/passenger-r4-f04-acceptance.mjs",
+    "test:browser:r4:handoff": "node scripts/passenger-r4-f06-handoff-acceptance.mjs",
     "test:browser:m5:reports": "node scripts/passenger-report-m5-acceptance.mjs",
     "test:browser:m7:integrated": "node scripts/passenger-integrated-m7-acceptance.mjs",
     "test:demo": "pnpm --filter @transum-in/api test:demo",
