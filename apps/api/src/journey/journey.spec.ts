@@ -29,6 +29,7 @@ import type {
 import { JourneyRoutingError } from './domain/journey.js';
 import {
   normalizeLeg,
+  normalizeWalkingSteps,
   parseNamespacedId,
 } from './infrastructure/otp-journey-routing.adapter.js';
 
@@ -204,6 +205,7 @@ describe('Phase 4B product journey orchestration', () => {
         route: null,
         trip: null,
         intermediateStops: null,
+        steps: null,
         legGeometry: null,
         start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
         end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
@@ -227,6 +229,7 @@ describe('Phase 4B product journey orchestration', () => {
         route: null,
         trip: null,
         intermediateStops: null,
+        steps: null,
         legGeometry: { points: '_p~iF~ps|U_ulLnnqC_mqNvxq`@' },
         start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
         end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
@@ -243,6 +246,112 @@ describe('Phase 4B product journey orchestration', () => {
     });
   });
 
+  it('preserves OTP walk steps with OTP provenance and drops invalid coordinates', () => {
+    assert.deepEqual(normalizeWalkingSteps(null), []);
+    assert.deepEqual(normalizeWalkingSteps([]), []);
+    const steps = normalizeWalkingSteps([
+      {
+        lat: -6.21,
+        lon: 106.845,
+        distance: 42,
+        streetName: 'Jalan Sudirman',
+        relativeDirection: 'RIGHT',
+        absoluteDirection: 'EAST',
+        area: false,
+        bogusName: false,
+        stayOn: true,
+      },
+      {
+        lat: -95,
+        lon: 106.8,
+        distance: 5,
+        streetName: 'Invalid',
+        relativeDirection: 'LEFT',
+        absoluteDirection: null,
+        area: null,
+        bogusName: null,
+        stayOn: null,
+      },
+      {
+        lat: -6.21,
+        lon: 106.85,
+        distance: -1,
+        streetName: null,
+        relativeDirection: null,
+        absoluteDirection: null,
+        area: null,
+        bogusName: null,
+        stayOn: null,
+      },
+    ]);
+    assert.equal(steps.length, 1);
+    assert.deepEqual(steps[0], {
+      latitude: -6.21,
+      longitude: 106.845,
+      distanceMeters: 42,
+      relativeDirection: 'RIGHT',
+      absoluteDirection: 'EAST',
+      streetName: 'Jalan Sudirman',
+      bogusName: false,
+      area: false,
+      stayOn: true,
+    });
+    const leg = normalizeLeg(
+      {
+        mode: 'WALK',
+        serviceDate: null,
+        distance: 120,
+        duration: 90,
+        from: { name: 'A', lat: -6.2, lon: 106.8, stop: null },
+        to: { name: 'B', lat: -6.21, lon: 106.81, stop: null },
+        route: null,
+        trip: null,
+        intermediateStops: null,
+        steps: [
+          {
+            lat: -6.2,
+            lon: 106.8,
+            distance: 10,
+            streetName: 'Origin Street',
+            relativeDirection: 'DEPART',
+            absoluteDirection: null,
+            area: null,
+            bogusName: null,
+            stayOn: null,
+          },
+        ],
+        legGeometry: null,
+        start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
+        end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
+      },
+      0,
+    );
+    assert.equal(leg.walkingSteps?.length, 1, 'walk steps reach the contract');
+    const transit = normalizeLeg(
+      {
+        mode: 'BUS',
+        serviceDate: null,
+        distance: 500,
+        duration: 300,
+        from: { name: 'A', lat: -6.2, lon: 106.8, stop: null },
+        to: { name: 'B', lat: -6.21, lon: 106.81, stop: null },
+        route: { gtfsId: '8:tnx:transjakarta:route:brt-6h', shortName: '6H' },
+        trip: null,
+        intermediateStops: null,
+        steps: null,
+        legGeometry: null,
+        start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
+        end: { scheduledTime: '2026-10-02T08:05:00+07:00' },
+      },
+      1,
+    );
+    assert.deepEqual(
+      transit.walkingSteps,
+      [],
+      'transit legs have no walk steps',
+    );
+  });
+
   it('keeps geometry null when OTP omits or truncates the polyline', () => {
     const base = {
       mode: 'WALK',
@@ -254,6 +363,7 @@ describe('Phase 4B product journey orchestration', () => {
       route: null,
       trip: null,
       intermediateStops: null,
+      steps: null,
       start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
       end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
     };

@@ -359,6 +359,9 @@ try {
   summary.marker_moved_with_stream = true;
 
   await emit({ lat: -6.1912, lon: 106.8312, acc: 200 });
+  await page.getByText(/untuk konteks peta/).waitFor({ timeout: 15000 });
+  summary.map_context_shown = true;
+  await emit({ lat: -6.1912, lon: 106.8312, acc: 300 });
   await page.getByText(/Akurasi lokasi rendah/).waitFor({ timeout: 15000 });
   summary.low_accuracy_shown = true;
 

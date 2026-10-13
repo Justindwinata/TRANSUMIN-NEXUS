@@ -185,6 +185,17 @@ export function mapAlternative(journey: JourneyAlternative) {
       service_date: leg.serviceDate,
       timing_precision: leg.timingPrecision,
       geometry: leg.geometry ?? null,
+      walking_steps: (leg.walkingSteps ?? []).map((step) => ({
+        latitude: step.latitude,
+        longitude: step.longitude,
+        distance_meters: step.distanceMeters,
+        relative_direction: step.relativeDirection,
+        absolute_direction: step.absoluteDirection,
+        street_name: step.streetName,
+        bogus_name: step.bogusName,
+        area: step.area,
+        stay_on: step.stayOn,
+      })),
       evidence_type: leg.mode === 'WALK' ? 'ESTIMATED' : 'SCHEDULED',
       entity_bindings: leg.entityBindings.map((binding) => ({
         otp_entity_id: binding.otpEntityId,

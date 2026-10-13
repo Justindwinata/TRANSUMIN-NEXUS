@@ -19,6 +19,18 @@ export type JourneyGeometry = Readonly<{
   coordinates: readonly (readonly [number, number])[];
 }>;
 
+export type JourneyWalkingStep = Readonly<{
+  latitude: number;
+  longitude: number;
+  distanceMeters: number;
+  relativeDirection: string | null;
+  absoluteDirection: string | null;
+  streetName: string | null;
+  bogusName: boolean;
+  area: boolean;
+  stayOn: boolean;
+}>;
+
 export type JourneyPlanRequest = Readonly<{
   origin: GeoPoint;
   destination: GeoPoint;
@@ -89,6 +101,12 @@ export type JourneyLeg = Readonly<{
   serviceDate: string | null;
   timingPrecision: JourneyTimingPrecision;
   geometry?: JourneyGeometry | null;
+  /**
+   * OTP-derived walk maneuvers. Provenance: OTP walk steps over the historical
+   * OSM/GTFS graph snapshot — directional hints, not independently validated
+   * live pedestrian navigation.
+   */
+  walkingSteps?: readonly JourneyWalkingStep[];
   entityBindings: readonly CanonicalEntityBinding[];
   operationalFlags: readonly JourneyOperationalFlag[];
 }>;

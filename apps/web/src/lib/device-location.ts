@@ -1,10 +1,34 @@
-export const GPS_ACCURACY_THRESHOLD_M = 50;
 export const GPS_STALE_MS = 30_000;
+
+/**
+ * Accuracy tiers for an uncertainty-aware policy (R5-A). A fix good enough for
+ * map context is not automatically good enough for navigation guidance or for a
+ * confident off-route claim, and vice versa. Thresholds are product policy, not
+ * universal truth; they are reviewed in tests, not assumed.
+ */
+export const GPS_NAVIGATION_ACCURACY_M = 30;
+export const GPS_MAP_ACCURACY_M = 250;
+
+export type GpsAccuracyTier = 'NAVIGATION' | 'MAP_CONTEXT' | 'UNCERTAIN';
+
+export function gpsAccuracyTier(accuracy: number | null): GpsAccuracyTier {
+  if (accuracy === null || !Number.isFinite(accuracy) || accuracy < 0)
+    return 'UNCERTAIN';
+  if (accuracy <= GPS_NAVIGATION_ACCURACY_M) return 'NAVIGATION';
+  if (accuracy <= GPS_MAP_ACCURACY_M) return 'MAP_CONTEXT';
+  return 'UNCERTAIN';
+}
+
+/** True only when a fix may drive confident navigation/off-route reasoning. */
+export function gpsNavigationGrade(accuracy: number | null): boolean {
+  return gpsAccuracyTier(accuracy) === 'NAVIGATION';
+}
 
 export type GpsState =
   | 'GPS_OFF'
   | 'GPS_REQUESTING_PERMISSION'
   | 'GPS_TRACKING'
+  | 'GPS_MAP_CONTEXT'
   | 'GPS_ACCURACY_LOW'
   | 'GPS_STALE'
   | 'GPS_PERMISSION_DENIED'
@@ -16,6 +40,7 @@ export const GPS_STATE = {
   GPS_OFF: 'GPS_OFF',
   GPS_REQUESTING_PERMISSION: 'GPS_REQUESTING_PERMISSION',
   GPS_TRACKING: 'GPS_TRACKING',
+  GPS_MAP_CONTEXT: 'GPS_MAP_CONTEXT',
   GPS_ACCURACY_LOW: 'GPS_ACCURACY_LOW',
   GPS_STALE: 'GPS_STALE',
   GPS_PERMISSION_DENIED: 'GPS_PERMISSION_DENIED',
@@ -45,10 +70,11 @@ export function gpsFreshness(sample: GpsSample | null, now: number): GpsState {
     now - sample.timestamp >= GPS_STALE_MS
   )
     return 'GPS_STALE';
-  // 50m is a display-quality cutoff, not route-matching or operational truth.
-  return sample.accuracy === null || sample.accuracy > GPS_ACCURACY_THRESHOLD_M
-    ? 'GPS_ACCURACY_LOW'
-    : 'GPS_TRACKING';
+  const tier = gpsAccuracyTier(sample.accuracy);
+  // Keep valid imprecise fixes for map context; navigation consumers must call
+  // gpsNavigationGrade() before progressing guidance or detecting off-route.
+  if (tier === 'UNCERTAIN') return 'GPS_ACCURACY_LOW';
+  return tier === 'NAVIGATION' ? 'GPS_TRACKING' : 'GPS_MAP_CONTEXT';
 }
 
 export function gpsNext(
@@ -70,8 +96,7 @@ export function gpsNext(
     return { sample: current, state: 'GPS_ERROR' };
   if (current && next.timestamp <= current.timestamp)
     return { sample: current, state: gpsFreshness(current, now) };
-  const accurate =
-    next.accuracy !== null && next.accuracy <= GPS_ACCURACY_THRESHOLD_M;
+  const accurate = gpsNavigationGrade(next.accuracy);
   const withinJitter =
     current &&
     distanceMeters(current, next) <=

@@ -10,7 +10,6 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { PassengerApiError, passengerApi } from '../lib/passenger-api';
 import { DEMO_REPLAY } from '../lib/demo-replay';
 import { useDeviceLocation } from '../lib/use-device-location';
-import { gpsFreshness } from '../lib/device-location';
 import {
   OFF_ROUTE_HISTORY,
   devicePositionFromSample,
@@ -292,6 +291,10 @@ export function PassengerApp() {
       navLegKey.current = key;
       navHistory.current = [];
     }
+    if (!device.navigationGrade) {
+      navHistory.current = [];
+      return;
+    }
     if (!device.position) return;
     const path = pathPoints(leg);
     const distance = path ? distanceToPathMeters(device.position, path) : null;
@@ -304,6 +307,7 @@ export function PassengerApp() {
     active?.status,
     active?.progress?.completed_segment_count,
     device.position?.timestamp,
+    device.navigationGrade,
     navigationPaused,
   ]);
 
@@ -444,12 +448,7 @@ export function PassengerApp() {
     longitude: number;
   } {
     const current = device.position;
-    const fresh =
-      current &&
-      device.state === 'GPS_TRACKING' &&
-      gpsFreshness(current, Date.now()) === 'GPS_TRACKING'
-        ? current
-        : null;
+    const fresh = current && device.navigationGrade ? current : null;
     if (endpoint === 'origin') {
       if (inputModes.origin === 'coordinates')
         return parsePoint(originLat, originLon);
@@ -955,11 +954,13 @@ export function PassengerApp() {
                     <p className="endpoint-note" role="status">
                       {device.state === 'GPS_TRACKING'
                         ? 'Fresh accurate device location ready.'
-                        : device.state === 'GPS_ACCURACY_LOW'
-                          ? 'Device location accuracy is too low. Waiting for a better fix.'
-                          : device.state === 'GPS_REQUESTING_PERMISSION'
-                            ? 'Requesting device location permission…'
-                            : 'Device location unavailable. Allow location and try again, or pick another input method.'}
+                        : device.state === 'GPS_MAP_CONTEXT'
+                          ? `Device location available for map context (accuracy ±${Math.round(device.position?.accuracy ?? 0)} m not yet navigation-grade). Use coordinates or a pin.`
+                          : device.state === 'GPS_ACCURACY_LOW'
+                            ? 'Device location accuracy is too low. Waiting for a better fix.'
+                            : device.state === 'GPS_REQUESTING_PERMISSION'
+                              ? 'Requesting device location permission…'
+                              : 'Device location unavailable. Allow location and try again, or pick another input method.'}
                     </p>
                   )}
                   {inputModes[endpoint] === 'coordinates' && (
@@ -1511,6 +1512,13 @@ export function PassengerApp() {
                         )}
                         {device.state === 'GPS_TRACKING' && (
                           <p role="status">Lokasi langsung aktif.</p>
+                        )}
+                        {device.state === 'GPS_MAP_CONTEXT' && (
+                          <p role="status">
+                            Lokasi tersedia untuk konteks peta. Akurasi belum
+                            cukup untuk panduan navigasi atau deteksi keluar
+                            jalur.
+                          </p>
                         )}
                         {device.state === 'GPS_ACCURACY_LOW' && (
                           <p role="status">

@@ -385,11 +385,60 @@ function parseLeg(value: Record<string, unknown>): JourneyLeg {
       'ESTIMATED',
     ] as const),
     geometry: parseGeometry(value.geometry),
+    walkingSteps: parseWalkingSteps(value.walking_steps),
     entityBindings: bindings,
     operationalFlags: array(value.operational_flags, 'operational_flags').map(
       (flag) => parseOperationalFlag(record(flag, 'operational_flag')),
     ),
   };
+}
+
+function parseWalkingSteps(value: unknown): JourneyLeg['walkingSteps'] {
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value))
+    throw new BadRequestException(
+      'segment walking_steps must be an array or null.',
+    );
+  return value.map((item, index) => {
+    const step = record(item, `walking_steps[${index}]`);
+    const latitude = number(step.latitude, `walking_steps[${index}].latitude`);
+    const longitude = number(
+      step.longitude,
+      `walking_steps[${index}].longitude`,
+    );
+    const distanceMeters = number(
+      step.distance_meters,
+      `walking_steps[${index}].distance_meters`,
+    );
+    if (
+      latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180 ||
+      distanceMeters < 0
+    )
+      throw new BadRequestException('walking step coordinates are invalid.');
+    return {
+      latitude,
+      longitude,
+      distanceMeters,
+      relativeDirection: nullableString(
+        step.relative_direction,
+        `walking_steps[${index}].relative_direction`,
+      ),
+      absoluteDirection: nullableString(
+        step.absolute_direction,
+        `walking_steps[${index}].absolute_direction`,
+      ),
+      streetName: nullableString(
+        step.street_name,
+        `walking_steps[${index}].street_name`,
+      ),
+      bogusName: step.bogus_name === true,
+      area: step.area === true,
+      stayOn: step.stay_on === true,
+    };
+  });
 }
 
 function parseGeometry(value: unknown): JourneyLeg['geometry'] {

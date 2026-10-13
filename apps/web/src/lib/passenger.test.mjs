@@ -331,12 +331,15 @@ test('report descriptions trim to validated server bounds', () => {
 });
 
 import {
-  GPS_ACCURACY_THRESHOLD_M,
+  GPS_MAP_ACCURACY_M,
+  GPS_NAVIGATION_ACCURACY_M,
   GPS_STATE,
   GPS_STALE_MS,
   distanceMeters,
+  gpsAccuracyTier,
   gpsErrorState,
   gpsFreshness,
+  gpsNavigationGrade,
   gpsNext,
 } from './device-location.ts';
 
@@ -409,11 +412,11 @@ test('heading kept only when finite, bounded, and accuracy sufficient', () => {
     assert.equal(out.state, GPS_STATE.GPS_TRACKING, `heading ${heading}`);
     assert.equal(out.sample?.heading, null, `heading ${heading} nulled`);
   }
-  const low = gpsNext(null, fix({ heading: 40, accuracy: 200 }), NOW);
+  const low = gpsNext(null, fix({ heading: 40, accuracy: 2000 }), NOW);
   assert.equal(
     low.state,
     GPS_STATE.GPS_ACCURACY_LOW,
-    'accuracy>threshold is low',
+    'accuracy>250m is uncertain',
   );
   assert.equal(low.sample?.heading, null, 'heading dropped at low accuracy');
   const staleLow = gpsFreshness(low.sample, NOW + GPS_STALE_MS);
@@ -428,14 +431,14 @@ test('freshness uses the 30s stale span boundary', () => {
     GPS_STATE.GPS_TRACKING,
   );
   assert.equal(gpsFreshness(good, NOW + GPS_STALE_MS), GPS_STATE.GPS_STALE);
-  // 50m accuracy cutoff on the tracked fix itself
+  // Tiered accuracy: 31–250 m is MAP_CONTEXT, >250 or null is uncertain.
   assert.equal(
     gpsFreshness(fix({ accuracy: 50, timestamp: NOW }), NOW),
-    GPS_STATE.GPS_TRACKING,
+    GPS_STATE.GPS_MAP_CONTEXT,
   );
   assert.equal(
-    gpsFreshness(fix({ accuracy: 50.1, timestamp: NOW }), NOW),
-    GPS_STATE.GPS_ACCURACY_LOW,
+    gpsFreshness(fix({ accuracy: 30.5, timestamp: NOW }), NOW),
+    GPS_STATE.GPS_MAP_CONTEXT,
   );
   assert.equal(
     gpsFreshness(fix({ accuracy: null, timestamp: NOW }), NOW),
@@ -450,9 +453,30 @@ test('geolocation error codes map to exact states', () => {
   assert.equal(gpsErrorState(99), GPS_STATE.GPS_ERROR);
 });
 
-test('50m accuracy threshold and 30s staleness are the named constants', () => {
-  assert.equal(GPS_ACCURACY_THRESHOLD_M, 50);
+test('30s staleness remains a named policy boundary', () => {
   assert.equal(GPS_STALE_MS, 30_000);
+});
+
+test('R5-A accuracy tiers separate navigation, map context, and uncertain fixes', () => {
+  assert.equal(GPS_NAVIGATION_ACCURACY_M, 30);
+  assert.equal(GPS_MAP_ACCURACY_M, 250);
+  assert.equal(gpsAccuracyTier(null), 'UNCERTAIN');
+  assert.equal(gpsAccuracyTier(-1), 'UNCERTAIN');
+  assert.equal(gpsAccuracyTier(Number.NaN), 'UNCERTAIN');
+  assert.equal(gpsAccuracyTier(0), 'NAVIGATION');
+  assert.equal(gpsAccuracyTier(30), 'NAVIGATION');
+  assert.equal(gpsAccuracyTier(30.1), 'MAP_CONTEXT');
+  assert.equal(gpsAccuracyTier(250), 'MAP_CONTEXT');
+  assert.equal(gpsAccuracyTier(250.1), 'UNCERTAIN');
+  assert.equal(gpsNavigationGrade(null), false);
+  assert.equal(gpsNavigationGrade(29), true);
+  assert.equal(gpsNavigationGrade(31), false);
+  // Valid imprecise fixes stay retained for map context: 80 m is map context.
+  const fix80 = fix({ accuracy: 80 });
+  assert.equal(gpsFreshness(fix80, NOW), GPS_STATE.GPS_MAP_CONTEXT);
+  const gps80 = gpsNext(null, fix({ accuracy: 80, heading: 40 }), NOW);
+  assert.equal(gps80.state, GPS_STATE.GPS_MAP_CONTEXT);
+  assert.equal(gps80.sample?.heading, null);
 });
 
 test('haversine sanity: Jakarta to Bandung straight-line ~120km', () => {

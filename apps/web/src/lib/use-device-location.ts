@@ -3,14 +3,22 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   GPS_STATE,
   GPS_STALE_MS,
+  gpsAccuracyTier,
+  gpsNavigationGrade,
   gpsErrorState,
+  gpsFreshness,
   gpsNext,
+  type GpsAccuracyTier,
   type GpsSample,
   type GpsState,
 } from './device-location';
 
 export type DeviceLocation = Readonly<{
   position: GpsSample | null;
+  /** Tier of the retained fix; drives whether it may touch navigation logic. */
+  accuracyTier: GpsAccuracyTier;
+  /** True only when the fix is fresh and accurate enough for navigation. */
+  navigationGrade: boolean;
   state: GpsState;
   start: () => void;
   stop: () => void;
@@ -111,5 +119,15 @@ export function useDeviceLocation(): DeviceLocation {
     };
   }, [clearWatch, start]);
 
-  return { position, state, start, stop } as const;
+  const fresh = position
+    ? gpsFreshness(position, Date.now()) === 'GPS_TRACKING'
+    : false;
+  return {
+    position,
+    state,
+    accuracyTier: gpsAccuracyTier(position?.accuracy ?? null),
+    navigationGrade: fresh && gpsNavigationGrade(position?.accuracy ?? null),
+    start,
+    stop,
+  } as const;
 }

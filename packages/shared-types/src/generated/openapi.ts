@@ -968,6 +968,17 @@ export interface components {
             type: "LineString";
             coordinates: number[][];
         };
+        JourneyWalkingStep: {
+            latitude: number;
+            longitude: number;
+            distance_meters: number;
+            relative_direction: string | null;
+            absolute_direction: string | null;
+            street_name: string | null;
+            bogus_name: boolean;
+            area: boolean;
+            stay_on: boolean;
+        };
         JourneySegment: {
             sequence: number;
             /** @enum {string} */
@@ -989,6 +1000,7 @@ export interface components {
             /** @enum {string} */
             timing_precision: "EXACT_SCHEDULE" | "FREQUENCY_DERIVED" | "SOURCE_GTFS_WITH_FREQUENCIES" | "ESTIMATED";
             geometry: components["schemas"]["JourneyGeometry"] | null;
+            walking_steps: components["schemas"]["JourneyWalkingStep"][];
             evidence_type: components["schemas"]["EvidenceType"];
             entity_bindings: components["schemas"]["JourneyEntityBinding"][];
             operational_flags: components["schemas"]["JourneyOperationalFlag"][];
