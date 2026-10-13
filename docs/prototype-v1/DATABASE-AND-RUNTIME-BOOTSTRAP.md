@@ -17,7 +17,7 @@ Purpose: reproduce the isolated product database and OTP runtime used by Prototy
 
 1. `cp .env.example .env`; set `POSTGRES_DB`, `POSTGRES_USER`, unique `POSTGRES_PASSWORD` (ignored file, never commit; rotate immediately if ever printed).
 2. Set `POSTGRES_VOLUME_NAME=transum-in-nexus-product-postgres-data` and `POSTGRES_PORT=5435` (or any free local port) so the protected legacy volume `transum-in-nexus-postgres-data` is never mounted.
-3. `pnpm db:up` → `pnpm db:migrate` → `pnpm db:status` (12 migrations).
+3. Load ignored local environment without printing it: `set -a; source .env; set +a`. Run `pnpm db:up`, then `pnpm db:migrate`, then `pnpm db:status` (17 migrations at `04376a0`; read-only status confirmed all applied on 2026-10-13). No migration was executed during publication review.
 4. Ingest (each CLI is idempotent):
    `pnpm data:transjakarta:validate` → `pnpm data:transjakarta:ingest` → `pnpm data:transjakarta:verify`
    `NODE_OPTIONS=--max-old-space-size=8192 pnpm --filter @transum-in/api exec tsx src/spatial/spatial.cli.ts validate` → same command with `ingest` → `pnpm data:spatial:verify`
