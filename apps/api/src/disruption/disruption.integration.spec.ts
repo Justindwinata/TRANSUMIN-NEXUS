@@ -5,6 +5,7 @@ import { sql } from 'kysely';
 
 import { createDatabase } from '../infrastructure/database/database.client.js';
 import { migrateToLatest } from '../infrastructure/database/database.migrator.js';
+import { assertInvocationScratchDatabase } from '../infrastructure/database/scratch.guard.js';
 import { DisruptionIntelligenceService } from './application/disruption-intelligence.service.js';
 
 const sourceId = '80000000-0000-4000-8000-000000000001';
@@ -30,70 +31,10 @@ const mobilityIds = [
 const database = createDatabase();
 const intelligence = new DisruptionIntelligenceService(database);
 
-async function clearFixture(): Promise<void> {
-  await sql`delete from simulation.impact_result where simulation_run_id in (select id from simulation.run where network_snapshot_id=${snapshotId}::uuid)`.execute(
-    database,
-  );
-  await sql`delete from simulation.state_override where simulation_run_id in (select id from simulation.run where network_snapshot_id=${snapshotId}::uuid)`.execute(
-    database,
-  );
-  await sql`delete from simulation.run where network_snapshot_id=${snapshotId}::uuid`.execute(
-    database,
-  );
-  await sql`delete from simulation.scenario_action where mobility_entity_id=any(${mobilityIds}::uuid[])`.execute(
-    database,
-  );
-  await sql`delete from simulation.scenario where id not in (select scenario_id from simulation.scenario_action)`.execute(
-    database,
-  );
-  await sql`delete from disruption.entity_impact where mobility_entity_id=any(${mobilityIds}::uuid[])`.execute(
-    database,
-  );
-  await sql`delete from disruption.impact_analysis where network_snapshot_id=${snapshotId}::uuid`.execute(
-    database,
-  );
-  await sql`delete from disruption.event where source_id=${sourceId}::uuid`.execute(
-    database,
-  );
-  await sql`delete from spatial.walking_edge where id=any(${edgeIds}::uuid[])`.execute(
-    database,
-  );
-  await sql`delete from spatial.network_node where id=any(${nodeIds}::uuid[])`.execute(
-    database,
-  );
-  await sql`alter table twin.network_snapshot_state disable trigger network_snapshot_state_immutable_update`.execute(
-    database,
-  );
-  await sql`delete from twin.network_snapshot_state where snapshot_id=${snapshotId}::uuid`.execute(
-    database,
-  );
-  await sql`alter table twin.network_snapshot_state enable trigger network_snapshot_state_immutable_update`.execute(
-    database,
-  );
-  await sql`alter table twin.network_snapshot disable trigger network_snapshot_immutable_update`.execute(
-    database,
-  );
-  await sql`delete from twin.network_snapshot where id=${snapshotId}::uuid`.execute(
-    database,
-  );
-  await sql`alter table twin.network_snapshot enable trigger network_snapshot_immutable_update`.execute(
-    database,
-  );
-  await sql`delete from twin.mobility_entity where id=any(${mobilityIds}::uuid[])`.execute(
-    database,
-  );
-  await sql`delete from meta.dataset_version where id=${versionId}::uuid`.execute(
-    database,
-  );
-  await sql`delete from meta.dataset_source where id=${sourceId}::uuid`.execute(
-    database,
-  );
-}
-
 describe('Phase 3 disruption and scenario persistence', () => {
   before(async () => {
+    await assertInvocationScratchDatabase(database);
     await migrateToLatest(database);
-    await clearFixture();
     await sql`
       insert into meta.dataset_source (
         id, source_key, name, provider, source_type, verification_status
@@ -155,7 +96,6 @@ describe('Phase 3 disruption and scenario persistence', () => {
   });
 
   after(async () => {
-    await clearFixture();
     await database.destroy();
   });
 

@@ -10,6 +10,7 @@ import { OperationalEventBus } from '../disruption/application/operational-event
 import { KyselyOperationalEntityResolver } from '../disruption/infrastructure/kysely-operational-entity-resolver.js';
 import { createDatabase } from '../infrastructure/database/database.client.js';
 import { migrateToLatest } from '../infrastructure/database/database.migrator.js';
+import { assertInvocationScratchDatabase } from '../infrastructure/database/scratch.guard.js';
 import { KyselyMobilityStateRepository } from '../mobility-twin/infrastructure/kysely-mobility-state.repository.js';
 import { OperationalContractValidator } from '../operational-data/application/operational-contract-validator.js';
 import type { OperationalObservation } from '../operational-data/domain/operational-data.js';
@@ -56,6 +57,7 @@ const gateway = new LiveOperationalGateway(
 
 describe('RUN 5A persistent active-journey targeting', () => {
   before(async () => {
+    await assertInvocationScratchDatabase(database);
     await migrateToLatest(database);
     await sql`
       insert into meta.dataset_source (

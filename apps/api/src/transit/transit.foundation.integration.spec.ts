@@ -11,6 +11,7 @@ import { AppModule } from '../app.module.js';
 import { configureApplication } from '../application.js';
 import { createDatabase } from '../infrastructure/database/database.client.js';
 import { migrateToLatest } from '../infrastructure/database/database.migrator.js';
+import { assertInvocationScratchDatabase } from '../infrastructure/database/scratch.guard.js';
 
 const ids = {
   source: randomUUID(),
@@ -366,8 +367,8 @@ async function insertTransitFixture(): Promise<void> {
 
 describe('FR-012 Phase 1A provenance and canonical transit foundation', () => {
   before(async () => {
+    await assertInvocationScratchDatabase(database);
     await migrateToLatest(database);
-    await clearPhaseOneFixtures();
     app = await NestFactory.create(AppModule, { logger: false });
     configureApplication(app);
     baseUrl = await listenLocally(app);

@@ -9,7 +9,7 @@
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test src/health/health.controller.spec.ts src/infrastructure/database/database.config.spec.ts src/transit/application/pagination.spec.ts src/transit/gtfs/gtfs-validator.spec.ts src/operational-data/operational-data.spec.ts src/operational-data/hazard-incident.spec.ts src/spatial/spatial.spec.ts src/mobility-twin/mobility-twin.spec.ts src/disruption/disruption.spec.ts src/routing-data/routing-data.spec.ts src/journey/journey.spec.ts src/journey/recovery.spec.ts src/passenger-reporting/passenger-report.service.spec.ts src/journey/demo-database-lifecycle.spec.ts src/journey/product-acceptance.spec.ts src/journey/presenter-session.spec.ts",
-    "test:integration": "node --import tsx --test --test-concurrency=1 src/infrastructure/database/database.integration.spec.ts src/transit/transit.foundation.integration.spec.ts src/transit/gtfs/gtfs-ingestion.integration.spec.ts src/spatial/spatial.integration.spec.ts src/mobility-twin/mobility-twin.integration.spec.ts src/disruption/disruption.integration.spec.ts src/disruption/hazard-incident.integration.spec.ts src/journey/journey.integration.spec.ts src/journey/journey-x1b.integration.spec.ts",
+    "test:integration": "tsx src/infrastructure/database/integration-suite.cli.ts",
     "db:migrate": "tsx src/infrastructure/database/database.cli.ts migrate",
     "db:status": "tsx src/infrastructure/database/database.cli.ts status",
     "data:transjakarta:fetch": "tsx src/transit/gtfs/transjakarta.cli.ts fetch",

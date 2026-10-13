@@ -17,6 +17,7 @@ import {
   type FoundationDatabase,
 } from './database.constants.js';
 import { getMigrationStatus, migrateToLatest } from './database.migrator.js';
+import { assertInvocationScratchDatabase } from './scratch.guard.js';
 
 const unavailableDatabase = new Kysely<FoundationDatabase>({
   dialect: new PostgresDialect({
@@ -53,6 +54,7 @@ describe('PostgreSQL/PostGIS foundation', () => {
   const database = createDatabase();
 
   before(async () => {
+    await assertInvocationScratchDatabase(database);
     await migrateToLatest(database);
   });
 
@@ -96,27 +98,22 @@ describe('PostgreSQL/PostGIS foundation', () => {
       order by schema_name
     `.execute(database);
 
+    const migrationNames = status.map((migration) => migration.name);
     assert.equal(secondRun.length, 0);
-    assert.equal(status.length, 12);
-    assert.deepEqual(
-      status.map((migration) => migration.name),
-      [
-        '202609280001_foundation',
-        '202609280002_data_provenance_and_transit',
-        '202609290001_gtfs_source_fidelity',
-        '202609290002_phase1_transit_hardening',
-        '202609300001_spatial_pedestrian_foundation',
-        '202610010001_hybrid_mobility_twin',
-        '202610010002_live_operational_gateway',
-        '202610010003_disruption_and_simulation_intelligence',
-        '202610030001_active_journey_targeted_alerts',
-        '202610050001_state_aware_journey_recovery',
-        '202610060001_active_journey_instance_identity',
-        '202610080001_ext_x1_incident_lifecycle',
-      ],
-    );
+    assert.ok(migrationNames.length > 0);
+    assert.deepEqual(migrationNames, [...migrationNames].sort());
+    assert.equal(new Set(migrationNames).size, migrationNames.length);
     assert.ok(
       status.every((migration) => migration.executedAt instanceof Date),
+      'Every discovered migration must be applied',
+    );
+    const ledger = await sql<{ name: string }>`
+      select name from meta.kysely_migration order by name
+    `.execute(database);
+    assert.deepEqual(
+      ledger.rows.map((row) => row.name),
+      migrationNames,
+      'Applied ledger must equal the migration files discovered in source',
     );
     assert.deepEqual(
       schemas.rows.map((row) => row.schemaName).sort(),

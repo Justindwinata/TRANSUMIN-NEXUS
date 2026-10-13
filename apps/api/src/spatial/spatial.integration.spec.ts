@@ -2,17 +2,24 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
 
+import { Kysely, PostgresDialect } from 'kysely';
 import { Pool } from 'pg';
 
 import { getDatabaseConfig } from '../infrastructure/database/database.config.js';
+import type { FoundationDatabase } from '../infrastructure/database/database.constants.js';
+import { assertInvocationScratchDatabase } from '../infrastructure/database/scratch.guard.js';
 
 describe('Phase 2A PostGIS spatial contracts', () => {
   const pool = new Pool(getDatabaseConfig());
+  const database = new Kysely<FoundationDatabase>({
+    dialect: new PostgresDialect({ pool }),
+  });
 
   before(async () => {
+    await assertInvocationScratchDatabase(database);
     await pool.query('select 1 from spatial.network_node limit 1');
   });
-  after(async () => pool.end());
+  after(async () => database.destroy());
 
   it('enforces real node FKs, SRID 4326, scoped references, and ambiguous aliases', async () => {
     const client = await pool.connect();
