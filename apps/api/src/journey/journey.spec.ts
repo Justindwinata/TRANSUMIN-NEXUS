@@ -9,6 +9,7 @@ import type {
 import {
   assertCanonicalStateBindings,
   JourneyPlannerService,
+  rankAlternatives,
 } from './application/journey-planner.service.js';
 import {
   extractJourneyDependencies,
@@ -318,6 +319,111 @@ describe('Phase 4B product journey orchestration', () => {
       fingerprintJourneyPlan(first),
       fingerprintJourneyPlan(changed),
     );
+  });
+});
+
+describe('R4-B preference-aware deterministic ranking', () => {
+  const a = {
+    ...alternative('route-a', 'entity-a'),
+    journeyId: 'journey-a',
+    durationSeconds: 600,
+    walkingDistanceMeters: 2000,
+    transferCount: 2,
+  };
+  const b = {
+    ...alternative('route-b', 'entity-b'),
+    journeyId: 'journey-b',
+    durationSeconds: 1800,
+    walkingDistanceMeters: 100,
+    transferCount: 0,
+  };
+  const c = {
+    ...alternative('route-c', 'entity-c'),
+    journeyId: 'journey-c',
+    durationSeconds: 1000,
+    walkingDistanceMeters: 600,
+    transferCount: 1,
+  };
+
+  it('ranks FASTEST, LEAST_WALKING, and FEWEST_TRANSFERS by the matching single dimension', () => {
+    assert.deepEqual(
+      rankAlternatives([b, c, a], 'FASTEST').map((item) => item.journeyId),
+      ['journey-a', 'journey-c', 'journey-b'],
+    );
+    assert.deepEqual(
+      rankAlternatives([a, c, b], 'LEAST_WALKING').map(
+        (item) => item.journeyId,
+      ),
+      ['journey-b', 'journey-c', 'journey-a'],
+    );
+    assert.deepEqual(
+      rankAlternatives([c, b, a], 'FEWEST_TRANSFERS').map(
+        (item) => item.journeyId,
+      ),
+      ['journey-b', 'journey-c', 'journey-a'],
+    );
+  });
+
+  it('ranks BALANCED by normalized weighted cost and keeps the middle option first', () => {
+    // SIMULATED fixture: duration [.5], walking [.3], transfers [.2]; min-max
+    // normalized across these three; zero ranges contribute 0 without mixing units.
+    assert.deepEqual(
+      rankAlternatives([a, b, c], 'BALANCED').map((item) => item.journeyId),
+      ['journey-c', 'journey-a', 'journey-b'],
+    );
+  });
+
+  it('breaks ties in score, duration, walking, transfers, then journeyId order', () => {
+    const x = {
+      ...alternative('route-x', 'entity-x'),
+      journeyId: 'journey-x',
+    };
+    const y = {
+      ...alternative('route-y', 'entity-y'),
+      journeyId: 'journey-y',
+    };
+    for (const preference of [
+      'BALANCED',
+      'FASTEST',
+      'LEAST_WALKING',
+      'FEWEST_TRANSFERS',
+    ] as const) {
+      assert.deepEqual(rankAlternatives([y, x], preference), [x, y]);
+    }
+    const shorter = { ...y, durationSeconds: 1 };
+    assert.deepEqual(rankAlternatives([x, shorter], 'LEAST_WALKING'), [
+      shorter,
+      x,
+    ]);
+    const lessWalking = { ...y, walkingDistanceMeters: 0 };
+    const moreWalking = { ...x, walkingDistanceMeters: 100 };
+    assert.deepEqual(rankAlternatives([moreWalking, lessWalking], 'FASTEST'), [
+      lessWalking,
+      moreWalking,
+    ]);
+    const moreTransfers = { ...x, transferCount: 1 };
+    assert.deepEqual(rankAlternatives([moreTransfers, y], 'FASTEST'), [
+      y,
+      moreTransfers,
+    ]);
+    assert.deepEqual(rankAlternatives([], 'BALANCED'), []);
+    assert.deepEqual(rankAlternatives([x], 'BALANCED'), [x]);
+  });
+
+  it('keeps normalized ranking invariant to unit scaling and input order without mutation', () => {
+    const candidates = Object.freeze([a, b, c]);
+    const scaled = candidates.map((item) => ({
+      ...item,
+      durationSeconds: item.durationSeconds * 60,
+      walkingDistanceMeters: item.walkingDistanceMeters * 1000,
+    }));
+    const ids = (items: readonly JourneyAlternative[]) =>
+      items.map((item) => item.journeyId);
+    assert.deepEqual(
+      ids(rankAlternatives(scaled.reverse(), 'BALANCED')),
+      ids(rankAlternatives(candidates, 'BALANCED')),
+    );
+    assert.deepEqual(candidates, [a, b, c]);
   });
 });
 

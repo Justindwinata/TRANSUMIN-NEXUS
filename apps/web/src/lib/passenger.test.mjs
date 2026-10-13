@@ -15,6 +15,9 @@ import {
   recoveryPart,
   recoveryPartLabel,
   recoverySummary,
+  rankingExplanation,
+  rankingFingerprint,
+  sameRankingCandidate,
   remainingReportTargets,
   samePassengerLeg,
   segmentPosition,
@@ -224,6 +227,46 @@ test('easiest among shown is subset-scoped and tie-aware, not global', () => {
   );
 });
 
+test('ranking fingerprint keeps honest server comparison and avoids client ranking', () => {
+  const journey = {
+    journey_id: 'plan-a',
+    duration_seconds: 3600,
+    walking_distance_meters: 800,
+    transfer_count: 1,
+  };
+  const fingerprint = rankingFingerprint(journey);
+  assert.deepEqual(fingerprint, {
+    journey_id: 'plan-a',
+    duration_seconds: 3600,
+    walking_distance_meters: 800,
+    transfer_count: 1,
+  });
+  assert.equal(sameRankingCandidate(fingerprint, { ...fingerprint }), true);
+  assert.equal(
+    sameRankingCandidate(fingerprint, {
+      ...fingerprint,
+      duration_seconds: fingerprint.duration_seconds + 1,
+    }),
+    false,
+  );
+  assert.equal(
+    sameRankingCandidate(fingerprint, {
+      ...fingerprint,
+      journey_id: 'plan-b',
+    }),
+    false,
+  );
+  const note = rankingExplanation('BALANCED', 'FASTEST', fingerprint, 3);
+  assert.match(note, /same best candidate/);
+  assert.match(
+    note,
+    /Balanced uses normalized weighted duration\/walking\/transfers/,
+  );
+  assert.match(note, /1 jam 0 min/);
+  assert.match(note, /800 m walking/);
+  assert.match(note, /1 transfer/);
+});
+
 test('report targets only cover remaining journey parts with provenance', () => {
   const stopA = {
     mobility_entity_id: '11111111-1111-4111-8111-111111111111',
@@ -266,9 +309,15 @@ test('report targets only cover remaining journey parts with provenance', () => 
   );
   assert.equal(remaining[0].provenance, 'gtfs:route-6H:stop-a');
   assert.match(remaining[0].label, /Gambir – Sarinah/);
-  assert.equal(remaining.find((t) => t.type === 'ROUTE').provenance, 'provenance: tidak tersedia');
+  assert.equal(
+    remaining.find((t) => t.type === 'ROUTE').provenance,
+    'provenance: tidak tersedia',
+  );
   const all = remainingReportTargets(journey, 0);
-  assert.equal(all.every((target) => ['STOP', 'STATION', 'ROUTE'].includes(target.type)), true);
+  assert.equal(
+    all.every((target) => ['STOP', 'STATION', 'ROUTE'].includes(target.type)),
+    true,
+  );
   const afterFirstLeg = remainingReportTargets(journey, 1);
   assert.equal(afterFirstLeg.length, 1, 'only later leg remains');
   assert.equal(remainingReportTargets(journey, 5).length, 0);
@@ -279,4 +328,137 @@ test('report descriptions trim to validated server bounds', () => {
   assert.equal(isValidReportDescription('Kondisi haltu banjir.'), true);
   assert.equal(isValidReportDescription('x'.repeat(2001)), false);
   assert.equal(isValidReportDescription('row\u0000'), false);
+});
+
+import {
+  GPS_ACCURACY_THRESHOLD_M,
+  GPS_STATE,
+  GPS_STALE_MS,
+  distanceMeters,
+  gpsErrorState,
+  gpsFreshness,
+  gpsNext,
+} from './device-location.ts';
+
+const fix = (over = {}) => ({
+  latitude: -6.2,
+  longitude: 106.8,
+  accuracy: 10,
+  heading: null,
+  timestamp: 1_000,
+  ...over,
+});
+const NOW = 5_000;
+
+test('invalid fixes map to GPS_ERROR and keep the current fix verbatim', () => {
+  const current = fix();
+  for (const bad of [
+    fix({ latitude: Number.NaN }),
+    fix({ latitude: 90.5 }),
+    fix({ longitude: 200 }),
+    fix({ timestamp: NOW + 1 }),
+    fix({ timestamp: Number.NaN }),
+    fix({ accuracy: -1 }),
+  ]) {
+    const result = gpsNext(current, bad, NOW);
+    assert.equal(result.state, GPS_STATE.GPS_ERROR, JSON.stringify(bad));
+    assert.equal(result.sample, current);
+  }
+});
+
+test('duplicate/regressed fixes ignored; stationary sample refreshes metadata without jitter', () => {
+  const current = fix({ timestamp: NOW - 1_000 });
+  let next = gpsNext(current, { ...current }, NOW);
+  assert.deepEqual(next, { sample: current, state: GPS_STATE.GPS_TRACKING });
+  next = gpsNext(current, fix({ timestamp: NOW - 2_000 }), NOW - 1_000);
+  assert.equal(next.sample, current);
+  next = gpsNext(current, fix({ latitude: -6.20005, timestamp: NOW }), NOW);
+  assert.equal(next.state, GPS_STATE.GPS_TRACKING);
+  assert.deepEqual(next.sample, { ...current, timestamp: NOW });
+  next = gpsNext(
+    fix({ accuracy: 40 }),
+    fix({ latitude: -6.20005, timestamp: NOW, accuracy: 10 }),
+    NOW,
+  );
+  assert.deepEqual(next.sample, fix({ accuracy: 10, timestamp: NOW }));
+  next = gpsNext(
+    current,
+    fix({ timestamp: NOW + GPS_STALE_MS }),
+    NOW + GPS_STALE_MS,
+  );
+  assert.equal(next.state, GPS_STATE.GPS_TRACKING);
+  assert.equal(next.sample.timestamp, NOW + GPS_STALE_MS);
+});
+
+test('real movement beyond accuracy advances the fix', () => {
+  const moved = gpsNext(
+    fix({ timestamp: NOW - 1_000 }),
+    fix({ latitude: -6.199, timestamp: NOW }),
+    NOW,
+  );
+  assert.equal(moved.state, GPS_STATE.GPS_TRACKING);
+  assert.equal(moved.sample?.latitude, -6.199);
+  assert.equal(moved.sample?.timestamp, NOW);
+});
+
+test('heading kept only when finite, bounded, and accuracy sufficient', () => {
+  const ok = gpsNext(null, fix({ heading: 40 }), NOW);
+  assert.equal(ok.sample?.heading, 40);
+  for (const heading of [Number.NaN, -0.1, 360]) {
+    const out = gpsNext(null, fix({ heading }), NOW);
+    assert.equal(out.state, GPS_STATE.GPS_TRACKING, `heading ${heading}`);
+    assert.equal(out.sample?.heading, null, `heading ${heading} nulled`);
+  }
+  const low = gpsNext(null, fix({ heading: 40, accuracy: 200 }), NOW);
+  assert.equal(
+    low.state,
+    GPS_STATE.GPS_ACCURACY_LOW,
+    'accuracy>threshold is low',
+  );
+  assert.equal(low.sample?.heading, null, 'heading dropped at low accuracy');
+  const staleLow = gpsFreshness(low.sample, NOW + GPS_STALE_MS);
+  assert.equal(staleLow, GPS_STATE.GPS_STALE);
+});
+
+test('freshness uses the 30s stale span boundary', () => {
+  assert.equal(gpsFreshness(null, NOW), GPS_STATE.GPS_STALE);
+  const good = fix({ timestamp: NOW });
+  assert.equal(
+    gpsFreshness(good, NOW + GPS_STALE_MS - 1),
+    GPS_STATE.GPS_TRACKING,
+  );
+  assert.equal(gpsFreshness(good, NOW + GPS_STALE_MS), GPS_STATE.GPS_STALE);
+  // 50m accuracy cutoff on the tracked fix itself
+  assert.equal(
+    gpsFreshness(fix({ accuracy: 50, timestamp: NOW }), NOW),
+    GPS_STATE.GPS_TRACKING,
+  );
+  assert.equal(
+    gpsFreshness(fix({ accuracy: 50.1, timestamp: NOW }), NOW),
+    GPS_STATE.GPS_ACCURACY_LOW,
+  );
+  assert.equal(
+    gpsFreshness(fix({ accuracy: null, timestamp: NOW }), NOW),
+    GPS_STATE.GPS_ACCURACY_LOW,
+  );
+});
+
+test('geolocation error codes map to exact states', () => {
+  assert.equal(gpsErrorState(1), GPS_STATE.GPS_PERMISSION_DENIED);
+  assert.equal(gpsErrorState(2), GPS_STATE.GPS_UNAVAILABLE);
+  assert.equal(gpsErrorState(3), GPS_STATE.GPS_ERROR);
+  assert.equal(gpsErrorState(99), GPS_STATE.GPS_ERROR);
+});
+
+test('50m accuracy threshold and 30s staleness are the named constants', () => {
+  assert.equal(GPS_ACCURACY_THRESHOLD_M, 50);
+  assert.equal(GPS_STALE_MS, 30_000);
+});
+
+test('haversine sanity: Jakarta to Bandung straight-line ~120km', () => {
+  const d = distanceMeters(
+    fix(),
+    fix({ latitude: -6.914744, longitude: 107.609811 }),
+  );
+  assert.ok(d > 100_000 && d < 150_000, `actual ${d}`);
 });

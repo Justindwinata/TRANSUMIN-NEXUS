@@ -50,10 +50,11 @@ export const passengerApi = {
       `transit/places?q=${encodeURIComponent(query)}&snapshot_id=${encodeURIComponent(snapshotId)}`,
       { signal },
     ),
-  plan: (input: object) =>
+  plan: (input: object, signal?: AbortSignal) =>
     request<Journey[]>('journeys/plan', {
       method: 'POST',
       body: JSON.stringify(input),
+      signal,
     }),
   activate: (journey: Journey, idempotencyKey: string, activatedAt?: string) =>
     request<Journey>(`journeys/${journey.journey_id}/activate`, {

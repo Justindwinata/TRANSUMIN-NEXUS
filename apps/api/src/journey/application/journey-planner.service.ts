@@ -285,19 +285,54 @@ function deterministicJourneyId(
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function rankAlternatives(
+export function rankAlternatives(
   alternatives: readonly JourneyAlternative[],
   preference: JourneyPlanRequest['preference'],
 ): JourneyAlternative[] {
-  return [...alternatives].sort((left, right) => {
-    const metric =
-      preference === 'FEWEST_TRANSFERS'
-        ? left.transferCount - right.transferCount
-        : preference === 'LEAST_WALKING'
-          ? left.walkingDistanceMeters - right.walkingDistanceMeters
-          : left.durationSeconds - right.durationSeconds;
-    return metric || left.journeyId.localeCompare(right.journeyId);
-  });
+  if (alternatives.length === 0) return [];
+  // Normalize across the full accepted set, before limiting returned alternatives.
+  const normalizeDuration = minMax(
+    alternatives.map((item) => item.durationSeconds),
+  );
+  const normalizeWalking = minMax(
+    alternatives.map((item) => item.walkingDistanceMeters),
+  );
+  const normalizeTransfers = minMax(
+    alternatives.map((item) => item.transferCount),
+  );
+  return alternatives
+    .map((alternative) => ({
+      alternative,
+      score:
+        preference === 'BALANCED'
+          ? 0.5 * normalizeDuration(alternative.durationSeconds) +
+            0.3 * normalizeWalking(alternative.walkingDistanceMeters) +
+            0.2 * normalizeTransfers(alternative.transferCount)
+          : preference === 'FASTEST'
+            ? alternative.durationSeconds
+            : preference === 'LEAST_WALKING'
+              ? alternative.walkingDistanceMeters
+              : alternative.transferCount,
+    }))
+    .sort((left, right) => {
+      // Ascending ties: score, duration, walking, transfers, then journeyId.
+      const a = left.alternative;
+      const b = right.alternative;
+      return (
+        left.score - right.score ||
+        a.durationSeconds - b.durationSeconds ||
+        a.walkingDistanceMeters - b.walkingDistanceMeters ||
+        a.transferCount - b.transferCount ||
+        (a.journeyId < b.journeyId ? -1 : a.journeyId > b.journeyId ? 1 : 0)
+      );
+    })
+    .map(({ alternative }) => alternative);
+}
+
+function minMax(values: readonly number[]): (value: number) => number {
+  const min = Math.min(...values);
+  const range = Math.max(...values) - min;
+  return (value) => (range === 0 ? 0 : (value - min) / range);
 }
 
 function round(value: number): number {

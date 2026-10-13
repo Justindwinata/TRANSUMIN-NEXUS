@@ -11,6 +11,7 @@
     "test:e2e": "node scripts/passenger-smoke.mjs",
     "test:browser:e2e": "node scripts/passenger-browser-acceptance.mjs",
     "test:browser:map": "node scripts/journey-map-browser-acceptance.mjs",
+    "test:browser:r4": "node scripts/passenger-r4-f01-f02-acceptance.mjs",
     "test:browser:m5:reports": "node scripts/passenger-report-m5-acceptance.mjs",
     "test:browser:m7:integrated": "node scripts/passenger-integrated-m7-acceptance.mjs",
     "test:demo": "pnpm --filter @transum-in/api test:demo",

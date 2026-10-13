@@ -85,6 +85,59 @@ export function modeName(mode: JourneySegment['mode']): string {
 export type JourneyPreference =
   'BALANCED' | 'FASTEST' | 'FEWEST_TRANSFERS' | 'LEAST_WALKING';
 
+const preferenceNames: Record<JourneyPreference, string> = {
+  BALANCED: 'Balanced',
+  FASTEST: 'Fastest',
+  FEWEST_TRANSFERS: 'Fewest transfers',
+  LEAST_WALKING: 'Least walking',
+};
+
+export type RankingFingerprint = Readonly<{
+  journey_id: string;
+  duration_seconds: number;
+  walking_distance_meters: number;
+  transfer_count: number;
+}>;
+
+export function rankingFingerprint(journey: Journey): RankingFingerprint {
+  return {
+    journey_id: journey.journey_id,
+    duration_seconds: journey.duration_seconds,
+    walking_distance_meters: journey.walking_distance_meters,
+    transfer_count: journey.transfer_count,
+  };
+}
+
+export function sameRankingCandidate(
+  left: RankingFingerprint,
+  right: RankingFingerprint,
+): boolean {
+  return (
+    left.journey_id === right.journey_id &&
+    left.duration_seconds === right.duration_seconds &&
+    left.walking_distance_meters === right.walking_distance_meters &&
+    left.transfer_count === right.transfer_count
+  );
+}
+
+// Honest note when the server returns the identical best candidate under two
+// distinct preferences: the calculations differ, the chosen journey does not.
+export function rankingExplanation(
+  previous: JourneyPreference,
+  next: JourneyPreference,
+  candidate: RankingFingerprint,
+  candidateCount: number,
+): string {
+  return (
+    `Server ranking reports the same best candidate for ${preferenceNames[previous]} and ${preferenceNames[next]} despite distinct calculations/candidate diversity. ` +
+    `Balanced uses normalized weighted duration/walking/transfers; other preferences use their named metric. ` +
+    `${candidateCount} returned candidate${candidateCount === 1 ? '' : 's'}; the full server candidate set is not shown. Metrics: ` +
+    `${formatDuration(candidate.duration_seconds)}, ` +
+    `${formatDistance(candidate.walking_distance_meters)} walking, ` +
+    `${transferLabel(candidate.transfer_count)}.`
+  );
+}
+
 export function easiestAmongShown(journeys: readonly Journey[]): string[] {
   const valid = journeys.filter(
     (journey) =>

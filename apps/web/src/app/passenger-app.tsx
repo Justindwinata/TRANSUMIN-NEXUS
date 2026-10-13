@@ -9,6 +9,9 @@ import {
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { PassengerApiError, passengerApi } from '../lib/passenger-api';
 import { DEMO_REPLAY } from '../lib/demo-replay';
+import { useDeviceLocation } from '../lib/use-device-location';
+import { gpsFreshness } from '../lib/device-location';
+import type { JourneyMapPoint } from './journey-map';
 import { PlaceSearch } from './place-search';
 import { JourneyMap } from './journey-map';
 import {
@@ -25,6 +28,9 @@ import {
   modeName,
   parsePoint,
   passengerRouteName,
+  rankingExplanation,
+  rankingFingerprint,
+  sameRankingCandidate,
   recoveryPart,
   recoveryPartLabel,
   recoverySummary,
@@ -70,6 +76,8 @@ export function PassengerApp() {
   const [destinationLon, setDestinationLon] = useState('');
   const [departure, setDeparture] = useState('');
   const [preference, setPreference] = useState<JourneyPreference>('BALANCED');
+  const preferenceRef = useRef<JourneyPreference>('BALANCED');
+  const [rankingMessage, setRankingMessage] = useState('');
   const [progressAt, setProgressAt] = useState('');
   const [alternatives, setAlternatives] = useState<Journey[]>([]);
   const [selected, setSelected] = useState<Journey | null>(null);
@@ -92,20 +100,21 @@ export function PassengerApp() {
     | 'report'
     | null
   >(null);
-  const [gps, setGps] = useState<
-    | { state: 'OFF' }
-    | { state: 'REQUESTING' }
-    | { state: 'DENIED' }
-    | { state: 'UNAVAILABLE' }
-    | { state: 'ERROR'; detail: string }
-    | {
-        state: 'READY';
-        latitude: number;
-        longitude: number;
-        accuracyMeters: number;
-        at: string;
-      }
-  >({ state: 'OFF' });
+  const device = useDeviceLocation();
+  const [followDevice, setFollowDevice] = useState(true);
+  const [selectionMode, setSelectionMode] = useState<
+    'origin' | 'destination' | null
+  >(null);
+  const [inputModes, setInputModes] = useState<
+    Record<
+      'origin' | 'destination',
+      'place' | 'pin' | 'current' | 'coordinates'
+    >
+  >({ origin: 'place', destination: 'place' });
+  const [originPin, setOriginPin] = useState<JourneyMapPoint | null>(null);
+  const [destinationPin, setDestinationPin] = useState<JourneyMapPoint | null>(
+    null,
+  );
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [reportCategory, setReportCategory] = useState('SERVICE');
@@ -118,6 +127,17 @@ export function PassengerApp() {
   const [reportsLoading, setReportsLoading] = useState(false);
   const [reportsError, setReportsError] = useState('');
   const reportKey = useRef<{ fingerprint: string; key: string } | null>(null);
+  const planRequest = useRef<{
+    id: number;
+    controller: AbortController;
+  } | null>(null);
+  const planRequestId = useRef(0);
+  const lastPlan = useRef<{
+    origin: { latitude: number; longitude: number };
+    destination: { latitude: number; longitude: number };
+    departure: string;
+  } | null>(null);
+  const lastBest = useRef<ReturnType<typeof rankingFingerprint> | null>(null);
 
   async function loadPersistedReports(journeyId: string) {
     setReportsLoading(true);
@@ -247,10 +267,26 @@ export function PassengerApp() {
     },
     destination: { latitude: number; longitude: number },
     departureAt: string,
-    preference: JourneyPreference = 'BALANCED',
+    requested: JourneyPreference,
   ) {
+    const priorPref = preferenceRef.current;
+    const priorFingerprint =
+      lastPlan.current &&
+      lastPlan.current.origin.latitude === origin.latitude &&
+      lastPlan.current.origin.longitude === origin.longitude &&
+      lastPlan.current.destination.latitude === destination.latitude &&
+      lastPlan.current.destination.longitude === destination.longitude &&
+      lastPlan.current.departure === departureAt
+        ? lastBest.current
+        : null;
+    const requestId = ++planRequestId.current;
+    planRequest.current?.controller.abort();
+    const controller = new AbortController();
+    planRequest.current = { id: requestId, controller };
+    lastPlan.current = { origin, destination, departure: departureAt };
     setError('');
     setMessage('');
+    setRankingMessage('');
     setBusy('search');
     setAlternatives([]);
     setSelected(null);
@@ -259,47 +295,160 @@ export function PassengerApp() {
         throw new Error(
           'Routing snapshot is not ready. Check the passenger configuration.',
         );
-      const results = await passengerApi.plan({
-        origin: { latitude: origin.latitude, longitude: origin.longitude },
-        destination: {
-          latitude: destination.latitude,
-          longitude: destination.longitude,
+      const results = await passengerApi.plan(
+        {
+          origin: { latitude: origin.latitude, longitude: origin.longitude },
+          destination: {
+            latitude: destination.latitude,
+            longitude: destination.longitude,
+          },
+          departure_at: toJakartaIso(departureAt),
+          network_snapshot_id: snapshotId,
+          preference: requested,
         },
-        departure_at: toJakartaIso(departureAt),
-        network_snapshot_id: snapshotId,
-        preference,
-      });
+        controller.signal,
+      );
+      if (requestId !== planRequestId.current) return;
       setAlternatives(results);
-      setSelected(results[0] ?? null);
-      if (results.length === 0)
+      const best = results[0];
+      setSelected(best ?? null);
+      preferenceRef.current = requested;
+      const fingerprint = best ? rankingFingerprint(best) : null;
+      lastBest.current = fingerprint;
+      if (best && fingerprint) {
+        if (
+          priorFingerprint &&
+          requested !== priorPref &&
+          sameRankingCandidate(priorFingerprint, fingerprint)
+        ) {
+          setRankingMessage(
+            rankingExplanation(
+              priorPref,
+              requested,
+              fingerprint,
+              results.length,
+            ),
+          );
+        }
+      } else {
         setMessage(
           'No journey was found for this place and departure time. Try another time or destination.',
         );
+      }
     } catch (cause) {
+      if (requestId !== planRequestId.current) return;
       const feedback = journeySearchFailure(cause);
       if (feedback.empty) setMessage(feedback.message);
       else setError(feedback.message);
     } finally {
-      setBusy(null);
+      if (requestId === planRequestId.current) {
+        planRequest.current = null;
+        setBusy(null);
+      }
     }
+  }
+
+  function changePreference(next: JourneyPreference) {
+    // Preference state updates visibly even when replanning is not allowed.
+    setRankingMessage('');
+    setPreference(next);
+    if (active) return;
+    if (!lastPlan.current) return;
+    const plan = lastPlan.current;
+    void planJourney(plan.origin, plan.destination, plan.departure, next);
+  }
+
+  function chooseEndpointMode(
+    endpoint: 'origin' | 'destination',
+    mode: 'place' | 'pin' | 'current' | 'coordinates',
+  ) {
+    setInputModes((current) => ({ ...current, [endpoint]: mode }));
+    if (mode === 'place') {
+      if (endpoint === 'origin') setOriginPin(null);
+      else setDestinationPin(null);
+      if (selectionMode === endpoint) setSelectionMode(null);
+    } else if (mode === 'pin') {
+      if (endpoint === 'origin') {
+        setOriginPlace(null);
+        setOriginPin(null);
+      } else {
+        setDestinationPlace(null);
+        setDestinationPin(null);
+      }
+      setSelectionMode(endpoint);
+    } else if (mode === 'current') {
+      if (selectionMode === endpoint) setSelectionMode(null);
+      if (endpoint === 'origin') {
+        setOriginPlace(null);
+        setOriginPin(null);
+      } else {
+        setDestinationPlace(null);
+        setDestinationPin(null);
+      }
+      device.start();
+    } else {
+      if (selectionMode === endpoint) setSelectionMode(null);
+      if (mode === 'coordinates') setAdvancedCoordinates(true);
+    }
+  }
+
+  function endpointCoords(endpoint: 'origin' | 'destination'): {
+    latitude: number;
+    longitude: number;
+  } {
+    const current = device.position;
+    const fresh =
+      current &&
+      device.state === 'GPS_TRACKING' &&
+      gpsFreshness(current, Date.now()) === 'GPS_TRACKING'
+        ? current
+        : null;
+    if (endpoint === 'origin') {
+      if (inputModes.origin === 'coordinates')
+        return parsePoint(originLat, originLon);
+      if (inputModes.origin === 'current') {
+        if (!fresh)
+          throw new Error(
+            'Current location needs a fresh accurate device fix. Wait for GPS or choose another input.',
+          );
+        return { latitude: fresh.latitude, longitude: fresh.longitude };
+      }
+      if (inputModes.origin === 'pin') {
+        if (!originPin) throw new Error('Choose origin pin on the map.');
+        return originPin;
+      }
+      if (!originPlace)
+        throw new Error(
+          'Choose a origin stop or station from the suggestions.',
+        );
+      return originPlace;
+    }
+    if (inputModes.destination === 'coordinates')
+      return parsePoint(destinationLat, destinationLon);
+    if (inputModes.destination === 'current') {
+      if (!fresh)
+        throw new Error(
+          'Current location needs a fresh accurate device fix. Wait for GPS or choose another input.',
+        );
+      return { latitude: fresh.latitude, longitude: fresh.longitude };
+    }
+    if (inputModes.destination === 'pin') {
+      if (!destinationPin)
+        throw new Error('Choose destination pin on the map.');
+      return destinationPin;
+    }
+    if (!destinationPlace)
+      throw new Error(
+        'Choose a destination stop or station from the suggestions.',
+      );
+    return destinationPlace;
   }
 
   async function search(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
-      const origin = originPlace
-        ? { latitude: originPlace.latitude, longitude: originPlace.longitude }
-        : advancedCoordinates
-          ? parsePoint(originLat, originLon)
-          : missingPlace('origin');
-      const destination = destinationPlace
-        ? {
-            latitude: destinationPlace.latitude,
-            longitude: destinationPlace.longitude,
-          }
-        : advancedCoordinates
-          ? parsePoint(destinationLat, destinationLon)
-          : missingPlace('destination');
+      const origin = endpointCoords('origin');
+      const destination = endpointCoords('destination');
       await planJourney(origin, destination, departure, preference);
     } catch (cause) {
       setError(errorMessage(cause));
@@ -312,6 +461,7 @@ export function PassengerApp() {
     setOriginPlace(DEMO_REPLAY.origin);
     setDestinationPlace(DEMO_REPLAY.destination);
     setDeparture(DEMO_REPLAY.departure);
+    setPreference('FEWEST_TRANSFERS');
     setAdvancedCoordinates(false);
     await planJourney(
       DEMO_REPLAY.origin,
@@ -433,31 +583,6 @@ export function PassengerApp() {
     } finally {
       setBusy(null);
     }
-  }
-
-  function requestDeviceLocation() {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      setGps({ state: 'UNAVAILABLE' });
-      return;
-    }
-    setGps({ state: 'REQUESTING' });
-    navigator.geolocation.getCurrentPosition(
-      (position) =>
-        setGps({
-          state: 'READY',
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          accuracyMeters: position.coords.accuracy,
-          at: new Date(position.timestamp).toISOString(),
-        }),
-      (failure) =>
-        setGps(
-          failure.code === failure.PERMISSION_DENIED
-            ? { state: 'DENIED' }
-            : { state: 'ERROR', detail: failure.message },
-        ),
-      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 0 },
-    );
   }
 
   async function submitPassengerReport(event: FormEvent<HTMLFormElement>) {
@@ -707,26 +832,90 @@ export function PassengerApp() {
             className="search-form"
             onSubmit={(event) => void search(event)}
           >
-            <div className="place-grid">
-              <PlaceSearch
-                label="From"
-                snapshotId={snapshotId}
-                value={originPlace}
-                onSelect={setOriginPlace}
-              />
-              <PlaceSearch
-                label="To"
-                snapshotId={snapshotId}
-                value={destinationPlace}
-                onSelect={setDestinationPlace}
-              />
+            <div className="place-grid endpoint-grid">
+              {(['origin', 'destination'] as const).map((endpoint) => (
+                <div className="endpoint-input" key={endpoint}>
+                  <div
+                    className="endpoint-modes"
+                    role="group"
+                    aria-label={`${endpoint === 'origin' ? 'From' : 'To'} input method`}
+                  >
+                    {(['place', 'pin', 'current', 'coordinates'] as const).map(
+                      (mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          className={
+                            inputModes[endpoint] === mode ? 'selected' : ''
+                          }
+                          aria-pressed={inputModes[endpoint] === mode}
+                          onClick={() => chooseEndpointMode(endpoint, mode)}
+                        >
+                          {mode === 'place'
+                            ? 'Place'
+                            : mode === 'pin'
+                              ? 'Map pin'
+                              : mode === 'current'
+                                ? 'Current'
+                                : 'Coordinates'}
+                        </button>
+                      ),
+                    )}
+                  </div>
+                  {inputModes[endpoint] === 'place' && (
+                    <PlaceSearch
+                      label={endpoint === 'origin' ? 'From' : 'To'}
+                      snapshotId={snapshotId}
+                      value={
+                        endpoint === 'origin' ? originPlace : destinationPlace
+                      }
+                      onSelect={
+                        endpoint === 'origin'
+                          ? setOriginPlace
+                          : setDestinationPlace
+                      }
+                    />
+                  )}
+                  {inputModes[endpoint] === 'pin' && (
+                    <p className="endpoint-note" role="status">
+                      {(endpoint === 'origin' ? originPin : destinationPin)
+                        ? `${endpoint === 'origin' ? 'Origin' : 'Destination'} pin selected on map. Click map or drag the pin to move it; pick another input method to stop choosing.`
+                        : `Click the map on the right to choose ${endpoint === 'origin' ? 'an origin' : 'a destination'} pin. Switch input method to cancel.`}
+                    </p>
+                  )}
+                  {inputModes[endpoint] === 'current' && (
+                    <p className="endpoint-note" role="status">
+                      {device.state === 'GPS_TRACKING'
+                        ? 'Fresh accurate device location ready.'
+                        : device.state === 'GPS_ACCURACY_LOW'
+                          ? 'Device location accuracy is too low. Waiting for a better fix.'
+                          : device.state === 'GPS_REQUESTING_PERMISSION'
+                            ? 'Requesting device location permission…'
+                            : 'Device location unavailable. Allow location and try again, or pick another input method.'}
+                    </p>
+                  )}
+                  {inputModes[endpoint] === 'coordinates' && (
+                    <p className="endpoint-note">
+                      Coordinates for{' '}
+                      {endpoint === 'origin' ? 'origin' : 'destination'} are in{' '}
+                      <strong>Advanced below</strong>.
+                    </p>
+                  )}
+                </div>
+              ))}
             </div>
             <details
               className="coordinate-details"
               open={advancedCoordinates}
-              onToggle={(event) =>
-                setAdvancedCoordinates(event.currentTarget.open)
-              }
+              onToggle={(event) => {
+                setAdvancedCoordinates(event.currentTarget.open);
+                if (event.currentTarget.open) {
+                  if (inputModes.origin === 'place' && !originPlace)
+                    chooseEndpointMode('origin', 'coordinates');
+                  if (inputModes.destination === 'place' && !destinationPlace)
+                    chooseEndpointMode('destination', 'coordinates');
+                }
+              }}
             >
               <summary>Advanced: enter coordinates instead</summary>
               <p>Use this only if your stop or station is not listed.</p>
@@ -771,7 +960,7 @@ export function PassengerApp() {
                 <select
                   value={preference}
                   onChange={(event) =>
-                    setPreference(event.target.value as JourneyPreference)
+                    changePreference(event.target.value as JourneyPreference)
                   }
                 >
                   <option value="BALANCED">Balanced</option>
@@ -809,9 +998,21 @@ export function PassengerApp() {
               {message}
             </div>
           )}
+          {rankingMessage && (
+            <p className="ranking-note" role="status">
+              {rankingMessage}
+            </p>
+          )}
+          {active && (
+            <p className="fine-print">
+              Rank by applies to new searches only. Your active journey stays
+              unchanged.
+            </p>
+          )}
           <section
             className="alternatives"
             aria-labelledby="alternatives-heading"
+            aria-busy={busy === 'search'}
           >
             <div className="section-line">
               <h2 id="alternatives-heading">Journey choices</h2>
@@ -887,9 +1088,31 @@ export function PassengerApp() {
             </h2>
           </div>
           {!displayed && (
-            <p className="empty-state">
-              Choose a journey to inspect its parts before starting.
-            </p>
+            <>
+              <p className="empty-state">
+                Choose a journey to inspect its parts before starting.
+              </p>
+              <JourneyMap
+                devicePosition={
+                  device.position
+                    ? {
+                        ...device.position,
+                        accuracy: device.position.accuracy ?? undefined,
+                      }
+                    : undefined
+                }
+                followDevicePosition={followDevice}
+                selectionMode={selectionMode}
+                originPin={originPin}
+                destinationPin={destinationPin}
+                onMapPointSelect={(point) => {
+                  if (selectionMode === 'origin') setOriginPin(point);
+                  if (selectionMode === 'destination') setDestinationPin(point);
+                }}
+                onOriginPinDrag={setOriginPin}
+                onDestinationPinDrag={setDestinationPin}
+              />
+            </>
           )}
           {displayed && (
             <>
@@ -946,7 +1169,29 @@ export function PassengerApp() {
               {displayed.fare_status === 'UNKNOWN' && (
                 <p className="fine-print">Fare information is unavailable.</p>
               )}
-              <JourneyMap journey={displayed} />
+              <JourneyMap
+                journey={displayed}
+                devicePosition={
+                  device.position
+                    ? {
+                        ...device.position,
+                        accuracy: device.position.accuracy ?? undefined,
+                      }
+                    : undefined
+                }
+                followDevicePosition={followDevice}
+                selectionMode={selectionMode}
+                originPin={originPin}
+                destinationPin={destinationPin}
+                onMapPointSelect={(point) => {
+                  if (selectionMode === 'origin') setOriginPin(point);
+                  else if (selectionMode === 'destination')
+                    setDestinationPin(point);
+                  setSelectionMode(null);
+                }}
+                onOriginPinDrag={setOriginPin}
+                onDestinationPinDrag={setDestinationPin}
+              />
               <details className="evidence-details">
                 <summary>Schedule and source details</summary>
                 <p>
@@ -1083,44 +1328,93 @@ export function PassengerApp() {
                           naik, turun, atau selesai. Anda tetap menandai
                           perjalanan secara manual.
                         </p>
-                        {gps.state === 'OFF' && (
+                        {(device.state === 'GPS_OFF' ||
+                          device.state === 'GPS_STOPPED') && (
                           <button
                             type="button"
                             className="text-button"
-                            onClick={requestDeviceLocation}
+                            onClick={device.start}
                           >
-                            Bagikan lokasi perangkat sekali ini
+                            Aktifkan Lokasi Langsung
                           </button>
                         )}
-                        {gps.state === 'REQUESTING' && (
+                        {device.state === 'GPS_REQUESTING_PERMISSION' && (
                           <p>Meminta izin lokasi…</p>
                         )}
-                        {gps.state === 'DENIED' && (
+                        {device.state === 'GPS_PERMISSION_DENIED' && (
                           <p className="feedback error" role="alert">
                             Izin lokasi ditolak. Lanjutkan menandai perjalanan
                             secara manual.
                           </p>
                         )}
-                        {gps.state === 'UNAVAILABLE' && (
+                        {device.state === 'GPS_UNAVAILABLE' && (
                           <p className="fine-print">
                             Peramban ini tidak mendukung lokasi perangkat.
                             Gunakan penandaan manual.
                           </p>
                         )}
-                        {gps.state === 'ERROR' && (
+                        {device.state === 'GPS_ERROR' && (
                           <p className="feedback error" role="alert">
-                            Lokasi tidak tersedia: {gps.detail}. Gunakan
-                            penandaan manual.
+                            Lokasi tidak tersedia. Gunakan penandaan manual.
                           </p>
                         )}
-                        {gps.state === 'READY' && (
-                          <p className="fine-print">
-                            Lokasi perangkat: {gps.latitude.toFixed(5)},{' '}
-                            {gps.longitude.toFixed(5)} · akurasi ±
-                            {Math.round(gps.accuracyMeters)} m ·{' '}
-                            {formatClock(gps.at)}. Ini konteks saja, bukan
-                            posisi kendaraan.
+                        {device.state === 'GPS_TRACKING' && (
+                          <p role="status">Lokasi langsung aktif.</p>
+                        )}
+                        {device.state === 'GPS_ACCURACY_LOW' && (
+                          <p role="status">
+                            Akurasi lokasi rendah. Tunggu sinyal membaik;
+                            penandaan tetap manual.
                           </p>
+                        )}
+                        {device.state === 'GPS_STOPPED' && (
+                          <p role="status">Berbagi lokasi dihentikan.</p>
+                        )}
+                        {device.state === 'GPS_STALE' && (
+                          <p className="fine-print">
+                            Lokasi terakhir sudah tidak segar. Gerakkan
+                            perangkat atau buka ulang halaman untuk memperbarui.
+                          </p>
+                        )}
+                        {device.position && device.state !== 'GPS_OFF' && (
+                          <>
+                            <p className="fine-print">
+                              Lokasi perangkat:{' '}
+                              {device.position.latitude.toFixed(5)},{' '}
+                              {device.position.longitude.toFixed(5)}{' '}
+                              {device.position.accuracy !== null &&
+                                `· akurasi ±${Math.round(device.position.accuracy)} m`}{' '}
+                              {device.position.heading !== null &&
+                                `· arah ${Math.round(device.position.heading)}°`}{' '}
+                              · pembaruan terakhir{' '}
+                              {formatClock(
+                                new Date(
+                                  device.position.timestamp,
+                                ).toISOString(),
+                              )}
+                              . Ini konteks saja, bukan posisi kendaraan.
+                            </p>
+                            <p className="text-button-row">
+                              <button
+                                type="button"
+                                className="text-button"
+                                onClick={() =>
+                                  setFollowDevice((value) => !value)
+                                }
+                              >
+                                {followDevice
+                                  ? 'Kamera bebas (berhenti mengikuti)'
+                                  : 'Ikuti lokasi saya'}
+                              </button>
+                              <button
+                                type="button"
+                                className="text-button"
+                                onClick={device.stop}
+                              >
+                                Berhenti berbagi lokasi
+                              </button>
+                            </p>
+                          </>
                         )}
                       </details>
                     </>
@@ -1639,8 +1933,4 @@ export function PassengerApp() {
       </div>
     </main>
   );
-}
-
-function missingPlace(which: 'origin' | 'destination'): never {
-  throw new Error(`Choose a ${which} stop or station from the suggestions.`);
 }

@@ -135,6 +135,68 @@ button:disabled {
 .place-grid > * {
   min-width: 0;
 }
+.endpoint-grid {
+  gap: 18px;
+}
+.endpoint-input {
+  min-width: 0;
+}
+.endpoint-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.endpoint-modes button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: var(--canvas);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.endpoint-modes button.selected {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--accent);
+}
+.endpoint-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+.endpoint-input .coordinate-inputs label {
+  display: block;
+  margin: 10px 0 0;
+  font-size: 0.84rem;
+  font-weight: 650;
+}
+.endpoint-input .coordinate-inputs input {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  background: var(--surface);
+}
+.private-pin.origin {
+  border-color: #4f8a4c;
+  background: #e5f2dd;
+}
+.private-pin.destination {
+  border-color: #b65b36;
+  background: #f7e8dd;
+}
+.journey-map.selecting-origin .maplibre-frame,
+.journey-map.selecting-destination .maplibre-frame {
+  cursor: crosshair;
+}
 .place-search {
   position: relative;
 }
@@ -294,6 +356,15 @@ button:disabled {
 }
 .alternatives {
   margin-top: 36px;
+}
+.ranking-note {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--accent);
+  color: var(--text);
+  background: var(--canvas);
+  font-size: 0.88rem;
+  line-height: 1.5;
 }
 .section-line {
   display: flex;
