@@ -11,6 +11,17 @@ import { PassengerApiError, passengerApi } from '../lib/passenger-api';
 import { DEMO_REPLAY } from '../lib/demo-replay';
 import { useDeviceLocation } from '../lib/use-device-location';
 import { gpsFreshness } from '../lib/device-location';
+import {
+  OFF_ROUTE_HISTORY,
+  devicePositionFromSample,
+  distanceToPathMeters,
+  isOffRoute,
+  modeNavLabel,
+  navigationMode,
+  nextGuidance,
+  pathPoints,
+  type NavMode,
+} from '../lib/navigation';
 import type { JourneyMapPoint } from './journey-map';
 import { PlaceSearch } from './place-search';
 import { JourneyMap } from './journey-map';
@@ -102,6 +113,9 @@ export function PassengerApp() {
   >(null);
   const device = useDeviceLocation();
   const [followDevice, setFollowDevice] = useState(true);
+  const [navigationPaused, setNavigationPaused] = useState(false);
+  const navLegKey = useRef<string | null>(null);
+  const navHistory = useRef<Array<{ distance: number | null }>>([]);
   const [selectionMode, setSelectionMode] = useState<
     'origin' | 'destination' | null
   >(null);
@@ -259,6 +273,39 @@ export function PassengerApp() {
       if (reconnectTimer) clearTimeout(reconnectTimer);
     };
   }, [active?.journey_id, active?.status]);
+
+  // Sustained off-route history for the current walking leg only; never a
+  // single noisy sample, and never persisted to the server.
+  useEffect(() => {
+    if (!active || active.status !== 'ACTIVE' || navigationPaused) return;
+    const leg = active.segments.find(
+      (segment) =>
+        segment.sequence === active.progress?.completed_segment_count,
+    );
+    if (!leg || leg.mode !== 'WALK') {
+      navHistory.current = [];
+      navLegKey.current = null;
+      return;
+    }
+    const key = `${active.journey_id}:${leg.sequence}`;
+    if (navLegKey.current !== key) {
+      navLegKey.current = key;
+      navHistory.current = [];
+    }
+    if (!device.position) return;
+    const path = pathPoints(leg);
+    const distance = path ? distanceToPathMeters(device.position, path) : null;
+    navHistory.current = [
+      ...navHistory.current.slice(-(OFF_ROUTE_HISTORY - 1)),
+      { distance },
+    ];
+  }, [
+    active?.journey_id,
+    active?.status,
+    active?.progress?.completed_segment_count,
+    device.position?.timestamp,
+    navigationPaused,
+  ]);
 
   async function planJourney(
     origin: {
@@ -794,6 +841,27 @@ export function PassengerApp() {
   );
   const currentAlerts = alerts.filter(alertIsCurrent);
   const historicalAlerts = alerts.filter((alert) => !alertIsCurrent(alert));
+  const boarding: { boarded: boolean; alighted: boolean } = {
+    boarded: currentLeg !== null && boardedLeg === currentLeg.sequence,
+    alighted: currentLeg !== null && alightedLeg === currentLeg.sequence,
+  };
+  const segments = active?.segments ?? [];
+  const navMode: NavMode =
+    displayingActive && active.status === 'ACTIVE'
+      ? navigationMode(segments, completed, boarding)
+      : 'PREPARING';
+  const navSample = devicePositionFromSample(device.position);
+  const navGuidance =
+    displayingActive && active.status === 'ACTIVE'
+      ? nextGuidance(segments, completed, boarding, navSample)
+      : null;
+  const offRouteActive =
+    displayingActive &&
+    active.status === 'ACTIVE' &&
+    (navMode === 'WALK_TO_BOARDING_STOP' || navMode === 'WALK_TRANSFER')
+      ? isOffRoute(navHistory.current, pathPoints(currentLeg))
+      : false;
+  const offRoute = displayingActive && !navigationPaused && offRouteActive;
   return (
     <main className="passenger-shell">
       <header className="passenger-header">
@@ -1101,7 +1169,7 @@ export function PassengerApp() {
                       }
                     : undefined
                 }
-                followDevicePosition={followDevice}
+                followDevicePosition={followDevice && !navigationPaused}
                 selectionMode={selectionMode}
                 originPin={originPin}
                 destinationPin={destinationPin}
@@ -1171,6 +1239,10 @@ export function PassengerApp() {
               )}
               <JourneyMap
                 journey={displayed}
+                completedSegmentCount={completed}
+                activeSegmentSequence={
+                  displayingActive ? (currentLeg?.sequence ?? null) : null
+                }
                 devicePosition={
                   device.position
                     ? {
@@ -1179,7 +1251,7 @@ export function PassengerApp() {
                       }
                     : undefined
                 }
-                followDevicePosition={followDevice}
+                followDevicePosition={followDevice && !navigationPaused}
                 selectionMode={selectionMode}
                 originPin={originPin}
                 destinationPin={destinationPin}
@@ -1219,6 +1291,57 @@ export function PassengerApp() {
                     {completed} of {active.segments.length} parts complete.
                     Progress is manual; device location is never used as proof.
                   </p>
+                  <div
+                    className={`navigation-card${navigationPaused ? ' paused' : ''}${offRoute ? ' off-route' : ''}`}
+                    role="region"
+                    aria-label={modeNavLabel(navMode)}
+                    data-provenance={navGuidance?.provenance ?? 'NO_DEVICE'}
+                  >
+                    <strong className="navigation-title">
+                      {navGuidance ? navGuidance.title : modeNavLabel(navMode)}
+                    </strong>
+                    {navGuidance && (
+                      <p className="fine-print">{navGuidance.detail}</p>
+                    )}
+                    {navGuidance?.provenance === 'SCHEMATIC_GEOMETRY' && (
+                      <p className="fine-print">
+                        Petunjuk jalan kaki skematik — hanya jarak pada geometri
+                        rute OTP, bukan petunjuk belok tervalidasi, bukan jadwal
+                        kendaraan langsung.
+                      </p>
+                    )}
+                    {!navGuidance && (
+                      <p className="fine-print">
+                        Navigasi belum tersedia. Gunakan penandaan manual di
+                        bawah.
+                      </p>
+                    )}
+                    {offRoute && (
+                      <p
+                        className="feedback warning"
+                        role="alert"
+                        data-provenance="SCHEMATIC_GEOMETRY"
+                      >
+                        Di luar jalur rute — pertimbangkan merencanakan ulang
+                        atau kembali ke jalur rute yang direncanakan.
+                      </p>
+                    )}
+                    <p className="fine-print">
+                      Status navigasi: {modeNavLabel(navMode)}{' '}
+                      {navigationPaused ? '· dijeda' : ''}
+                    </p>
+                    <div className="text-button-row">
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => setNavigationPaused((value) => !value)}
+                      >
+                        {navigationPaused
+                          ? 'Lanjutkan navigasi'
+                          : 'Jeda navigasi'}
+                      </button>
+                    </div>
+                  </div>
                   {journeyFinished ? (
                     <p className="feedback" role="status">
                       Selesaikan Perjalanan — perjalanan ini sudah selesai.

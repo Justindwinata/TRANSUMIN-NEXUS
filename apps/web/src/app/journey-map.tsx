@@ -40,6 +40,8 @@ export type JourneyMapPoint = MapCoordinate;
 
 export type JourneyMapProps = Readonly<{
   journey?: Journey | null;
+  completedSegmentCount?: number;
+  activeSegmentSequence?: number | null;
   devicePosition?: DevicePosition | null;
   followDevicePosition?: boolean;
   onMapPointSelect?: (point: JourneyMapPoint) => void;
@@ -158,6 +160,8 @@ function addDeviceLayers(map: MapLibreMap): void {
 
 export function JourneyMap({
   journey,
+  completedSegmentCount = 0,
+  activeSegmentSequence = null,
   devicePosition,
   followDevicePosition = false,
   onMapPointSelect,
@@ -425,6 +429,54 @@ export function JourneyMap({
       `${validDevice.latitude.toFixed(6)},${validDevice.longitude.toFixed(6)}`,
     );
   }, [validDevice]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady || !journey) return;
+    for (const segment of renderableSegments) {
+      const id = `journey-${journey.journey_id}-segment-${segment.sequence}`;
+      if (!map.getLayer(id)) continue;
+      const status =
+        activeSegmentSequence === null
+          ? 'upcoming'
+          : segment.sequence === activeSegmentSequence
+            ? 'active'
+            : segment.sequence < activeSegmentSequence
+              ? 'completed'
+              : 'upcoming';
+      map.setPaintProperty(id, 'line-opacity', status === 'active' ? 1 : 0.4);
+      map.setPaintProperty(
+        id,
+        'line-width',
+        status === 'active'
+          ? segment.mode === 'WALK'
+            ? 5
+            : 7
+          : segment.mode === 'WALK'
+            ? 3
+            : 5,
+      );
+    }
+    mapNode.current?.setAttribute(
+      'data-active-segment',
+      activeSegmentSequence === null ? 'none' : String(activeSegmentSequence),
+    );
+    mapNode.current?.setAttribute(
+      'data-completed-segments',
+      String(
+        activeSegmentSequence === null
+          ? completedSegmentCount
+          : Math.min(completedSegmentCount, activeSegmentSequence),
+      ),
+    );
+  }, [
+    activeSegmentSequence,
+    completedSegmentCount,
+    mapReady,
+    journey?.journey_id,
+    renderableSegments,
+    journey,
+  ]);
 
   const unavailableSegments = segments.filter(
     (segment) => segment.points.length < 2,

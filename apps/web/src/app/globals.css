@@ -649,6 +649,31 @@ button:disabled {
   padding: 12px 14px;
   background: var(--canvas);
 }
+.navigation-card {
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: var(--surface);
+  display: grid;
+  gap: 6px;
+}
+.navigation-card .navigation-title {
+  font-size: 1rem;
+  color: var(--text);
+}
+.navigation-card.paused {
+  border-left-color: var(--muted);
+  opacity: 0.85;
+}
+.navigation-card.off-route {
+  border-left-color: #b4532f;
+}
+.navigation-card .text-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .progress-actions .current-leg p {
   color: var(--text);
   font-size: 0.92rem;
