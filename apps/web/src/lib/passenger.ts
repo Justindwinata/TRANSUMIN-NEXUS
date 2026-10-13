@@ -259,7 +259,7 @@ export function samePassengerLeg(
 
 export function recoverySummary(recovery: Recovery): string {
   if (recovery.status !== 'COMPLETED' || !recovery.proposed_journey)
-    return 'No safe repair was found for the current conditions.';
+    return 'Tidak ada rute pengganti yang aman untuk kondisi saat ini. Rencana awal Anda tidak berubah.';
   const kept =
     recovery.preserved_segments.length + recovery.rejoined_segments.length;
   const parts = [

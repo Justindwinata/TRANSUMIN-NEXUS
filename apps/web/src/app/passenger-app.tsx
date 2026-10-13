@@ -562,8 +562,8 @@ export function PassengerApp() {
       );
       setMessage(
         result.status === 'COMPLETED'
-          ? 'Recovery option is ready. Your active journey has not changed.'
-          : 'No safe recovery route was found. Your original plan remains unchanged.',
+          ? 'Terdapat opsi recovery. Perjalanan aktif Anda belum berubah.'
+          : recoverySummary(result),
       );
     } catch (cause) {
       setError(errorMessage(cause));

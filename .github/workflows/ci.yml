@@ -34,6 +34,9 @@ jobs:
       - name: Run foundation quality gate
         run: pnpm check
 
+      - name: Run client-bundle secret category scan
+        run: pnpm security:scan --category-only
+
   integration:
     runs-on: ubuntu-latest
     needs: quality

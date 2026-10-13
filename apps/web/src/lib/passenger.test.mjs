@@ -81,7 +81,7 @@ test('recovery structure and passenger summary follow backend evidence', () => {
   );
   assert.equal(
     recoverySummary({ ...recovery, status: 'NO_PATH', proposed_journey: null }),
-    'No safe repair was found for the current conditions.',
+    'Tidak ada rute pengganti yang aman untuk kondisi saat ini. Rencana awal Anda tidak berubah.',
   );
 });
 

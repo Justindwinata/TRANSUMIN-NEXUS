@@ -153,6 +153,7 @@ try {
       reporter,
       '--test-timeout',
       String(timeout),
+      'src/journey/node-test-child-runner.spec.ts',
       'src/journey/journey.integration.spec.ts',
       'src/journey/active-journey-boarding.spec.ts',
       'src/passenger-reporting/passenger-reporting.integration.spec.ts',
@@ -174,6 +175,7 @@ try {
       '--test-timeout',
       String(timeout),
       'src/journey/recovery-acceptance.integration.spec.ts',
+      'src/journey/active-journey-continuation.integration.spec.ts',
     ],
     { ...process.env, DATABASE_URL: url },
   );

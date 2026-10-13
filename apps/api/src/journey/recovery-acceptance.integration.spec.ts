@@ -349,6 +349,17 @@ describe('M6 recovery acceptance lineage', () => {
       }),
       { code: 'RECOVERY_CANDIDATE_BLOCKED' },
     );
+    const blockedState = await sql<{ count: number }>`
+      select count(*)::int as count from twin.mobility_state
+      where mobility_entity_id=${ids.blockedEntity}::uuid and operational_state='UNAVAILABLE'
+    `.execute(database);
+    assert.equal(blockedState.rows[0]?.count, 1, 'S09 blocked candidate must stay UNAVAILABLE');
+    const persisted = await sql<{ count: number }>`
+      select count(*)::int as count from recovery.recovery_acceptance
+      where recovery_id=${blockedProposal}::uuid
+        and owner_ref=${ids.owner} and idempotency_key='m6-blocked-accept'
+    `.execute(database);
+    assert.equal(persisted.rows[0]?.count, 0, 'S09 rejected acceptance must not persist lineage');
   });
 
   it('rejects acceptance when the triggering impact has resolved', async () => {
