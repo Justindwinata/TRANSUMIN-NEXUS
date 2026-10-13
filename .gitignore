@@ -27,6 +27,7 @@ data/staging/**
 data/processed/**
 artifacts/evaluation/raw/**
 artifacts/evaluation/logs/**
+.release-evidence/
 
 # local recovery and platform noise
 .DS_Store
