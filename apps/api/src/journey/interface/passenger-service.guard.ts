@@ -1,6 +1,11 @@
 import { timingSafeEqual } from 'node:crypto';
 
-import { Injectable, UnauthorizedException, type CanActivate, type ExecutionContext } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  type CanActivate,
+  type ExecutionContext,
+} from '@nestjs/common';
 
 /** Prototype proxy identity only; passenger ownership remains repository-scoped. */
 @Injectable()

@@ -16,7 +16,10 @@ import {
 } from '@nestjs/common';
 
 import { RecoveryService } from '../application/recovery.service.js';
-import type { RecoveryAcceptance, RecoveryProposal } from '../domain/recovery.js';
+import type {
+  RecoveryAcceptance,
+  RecoveryProposal,
+} from '../domain/recovery.js';
 import { RecoveryError } from '../domain/recovery.js';
 import { mapAlternative } from './journey.controller.js';
 import { PassengerServiceGuard } from './passenger-service.guard.js';

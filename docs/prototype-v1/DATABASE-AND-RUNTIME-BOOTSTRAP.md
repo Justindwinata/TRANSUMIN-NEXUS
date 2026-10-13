@@ -29,9 +29,10 @@ Purpose: reproduce the isolated product database and OTP runtime used by Prototy
 
 ## 2. Run the app
 
-- API: `set -a; source .env; set +a; pnpm dev:api` (or `pnpm --filter @transum-in/api exec tsx src/main.ts`; env vars are read at runtime, not from dotenv).
-- Web: `PASSENGER_API_BASE_URL=http://127.0.0.1:3001/api/v1 PASSENGER_NETWORK_SNAPSHOT_ID=43fb9a29-0c89-5c72-8826-e3dc2adcfb1f pnpm dev:web`.
-- Verify: `curl http://127.0.0.1:3001/health/ready`; browser `GET /api/passenger/config`.
+- API: `set -a; source .env; set +a; pnpm dev:api` (or `pnpm --filter @transum-in/api exec tsx src/main.ts`; env vars are read at runtime, not from dotenv). `API_PORT=3001` is the checked `.env.example` default.
+- Web: `PASSENGER_API_BASE_URL=http://127.0.0.1:3001/api/v1 PASSENGER_NETWORK_SNAPSHOT_ID=43fb9a29-0c89-5c72-8826-e3dc2adcfb1f pnpm dev:web`. `PASSENGER_NETWORK_SNAPSHOT_ID` is required for R2 workflow, S01, and multi-OD evidence.
+- Verify API: `curl http://127.0.0.1:3001/health/ready` (`apps/api/src/application.ts` exposes the unprefixed readiness path).
+- Verify web proxy in browser: `GET http://127.0.0.1:3000/api/passenger/config` (`WEB_PORT=3000` from `.env.example`).
 
 ## 3. Acceptance
 

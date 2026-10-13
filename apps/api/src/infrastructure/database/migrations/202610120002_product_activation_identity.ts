@@ -17,6 +17,8 @@ export async function up(database: Kysely<unknown>): Promise<void> {
 
 export async function down(database: Kysely<unknown>): Promise<void> {
   // Restore only when independent duplicate plans do not exist; otherwise fails safely.
-  await sql`alter table journey.journey_plan add constraint journey_plan_owner_fingerprint_unique unique (owner_ref, plan_fingerprint)`.execute(database);
+  await sql`alter table journey.journey_plan add constraint journey_plan_owner_fingerprint_unique unique (owner_ref, plan_fingerprint)`.execute(
+    database,
+  );
   await sql`drop table journey.activation_receipt`.execute(database);
 }

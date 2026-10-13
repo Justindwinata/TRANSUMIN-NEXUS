@@ -237,7 +237,10 @@ describe('M6 recovery acceptance', () => {
     const active = activeJourney();
     const proposal = await recoveryService(
       active,
-      plannerFixture([result(baselineAlternative()), result(repairAlternative())]),
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
     ).create(input());
     const fixture = acceptanceFixture(active, proposal);
     const acceptance = await fixture.service.accept(acceptInput(proposal));
@@ -252,9 +255,14 @@ describe('M6 recovery acceptance', () => {
     const active = activeJourney();
     const proposal = await recoveryService(
       active,
-      plannerFixture([result(baselineAlternative()), result(repairAlternative())]),
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
     ).create(input());
-    const first = await acceptanceFixture(active, proposal).service.accept(acceptInput(proposal));
+    const first = await acceptanceFixture(active, proposal).service.accept(
+      acceptInput(proposal),
+    );
     const replay = await acceptanceFixture(active, proposal, {
       revision: 3,
       impactCurrent: false,
@@ -268,12 +276,20 @@ describe('M6 recovery acceptance', () => {
     const active = activeJourney();
     const proposal = await recoveryService(
       active,
-      plannerFixture([result(baselineAlternative()), result(repairAlternative())]),
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
     ).create(input());
-    const receipt = await acceptanceFixture(active, proposal).service.accept(acceptInput(proposal));
+    const receipt = await acceptanceFixture(active, proposal).service.accept(
+      acceptInput(proposal),
+    );
     await assert.rejects(
-      acceptanceFixture(active, proposal, { acceptedByKey: receipt }).service.accept({
-        ...acceptInput(proposal), progressRevision: 3,
+      acceptanceFixture(active, proposal, {
+        acceptedByKey: receipt,
+      }).service.accept({
+        ...acceptInput(proposal),
+        progressRevision: 3,
       }),
       { code: 'IDEMPOTENCY_CONFLICT' },
     );
@@ -283,13 +299,21 @@ describe('M6 recovery acceptance', () => {
     const active = activeJourney();
     const proposal = await recoveryService(
       active,
-      plannerFixture([result(baselineAlternative()), result(repairAlternative())]),
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
     ).create(input());
-    const receipt = await acceptanceFixture(active, proposal).service.accept(acceptInput(proposal));
+    const receipt = await acceptanceFixture(active, proposal).service.accept(
+      acceptInput(proposal),
+    );
     await assert.rejects(
-      acceptanceFixture(active, proposal, { accepted: receipt }).service.accept({
-        ...acceptInput(proposal), idempotencyKey: 'accept-key-b',
-      }),
+      acceptanceFixture(active, proposal, { accepted: receipt }).service.accept(
+        {
+          ...acceptInput(proposal),
+          idempotencyKey: 'accept-key-b',
+        },
+      ),
       { code: 'IDEMPOTENCY_CONFLICT' },
     );
   });
@@ -298,13 +322,37 @@ describe('M6 recovery acceptance', () => {
     const active = activeJourney();
     const proposal = await recoveryService(
       active,
-      plannerFixture([result(baselineAlternative()), result(repairAlternative())]),
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
     ).create(input());
-    await assert.rejects(acceptanceFixture(active, proposal, { revision: 3 }).service.accept(acceptInput(proposal)), { code: 'RECOVERY_STALE' });
-    await assert.rejects(acceptanceFixture(active, proposal, { blocked: true }).service.accept(acceptInput(proposal)), { code: 'RECOVERY_CANDIDATE_BLOCKED' });
-    await assert.rejects(acceptanceFixture(active, proposal, { impactCurrent: false }).service.accept(acceptInput(proposal)), { code: 'RECOVERY_STALE' });
-    const noPath = await recoveryService(active, plannerFixture([result(baselineAlternative()), null])).create(input());
-    await assert.rejects(acceptanceFixture(active, noPath).service.accept(acceptInput(noPath)), { code: 'RECOVERY_NOT_ACCEPTABLE' });
+    await assert.rejects(
+      acceptanceFixture(active, proposal, { revision: 3 }).service.accept(
+        acceptInput(proposal),
+      ),
+      { code: 'RECOVERY_STALE' },
+    );
+    await assert.rejects(
+      acceptanceFixture(active, proposal, { blocked: true }).service.accept(
+        acceptInput(proposal),
+      ),
+      { code: 'RECOVERY_CANDIDATE_BLOCKED' },
+    );
+    await assert.rejects(
+      acceptanceFixture(active, proposal, {
+        impactCurrent: false,
+      }).service.accept(acceptInput(proposal)),
+      { code: 'RECOVERY_STALE' },
+    );
+    const noPath = await recoveryService(
+      active,
+      plannerFixture([result(baselineAlternative()), null]),
+    ).create(input());
+    await assert.rejects(
+      acceptanceFixture(active, noPath).service.accept(acceptInput(noPath)),
+      { code: 'RECOVERY_NOT_ACCEPTABLE' },
+    );
   });
 });
 

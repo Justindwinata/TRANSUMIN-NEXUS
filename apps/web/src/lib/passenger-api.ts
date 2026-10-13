@@ -65,7 +65,13 @@ export const passengerApi = {
       }),
     }),
   getJourney: (id: string) => request<Journey>(`journeys/${id}`),
-  progress: (id: string, completed: number, total: number, recordedAt: string, acceptedRecoveryId?: string | null) =>
+  progress: (
+    id: string,
+    completed: number,
+    total: number,
+    recordedAt: string,
+    acceptedRecoveryId?: string | null,
+  ) =>
     request<Journey>(`journeys/${id}/progress`, {
       method: 'PATCH',
       body: JSON.stringify({
@@ -175,7 +181,12 @@ export const passengerApi = {
       headers: { 'idempotency-key': key },
       body: JSON.stringify({ progress_revision: progressRevision }),
     }),
-  recovery: (journeyId: string, impactId: string, key: string, recoveryAt: string) =>
+  recovery: (
+    journeyId: string,
+    impactId: string,
+    key: string,
+    recoveryAt: string,
+  ) =>
     request<Recovery>('recoveries', {
       method: 'POST',
       headers: { 'idempotency-key': key },
@@ -185,20 +196,26 @@ export const passengerApi = {
         recovery_at: recoveryAt,
       }),
     }),
-  submitReport: (input: {
-    active_journey_id: string | null;
-    category: string;
-    observed_at: string;
-    mobility_entity_id: string;
-    entity_type: string;
-    description: string;
-  }, idempotencyKey: string) =>
+  submitReport: (
+    input: {
+      active_journey_id: string | null;
+      category: string;
+      observed_at: string;
+      mobility_entity_id: string;
+      entity_type: string;
+      description: string;
+    },
+    idempotencyKey: string,
+  ) =>
     request<PassengerReport>('passenger-reports', {
       method: 'POST',
       headers: { 'idempotency-key': idempotencyKey },
       body: JSON.stringify(input),
     }),
   listReports: (journeyId: string) =>
-    request<PassengerReport[]>(`passenger-reports?active_journey_id=${encodeURIComponent(journeyId)}`),
-  getReport: (id: string) => request<PassengerReport>(`passenger-reports/${id}`),
+    request<PassengerReport[]>(
+      `passenger-reports?active_journey_id=${encodeURIComponent(journeyId)}`,
+    ),
+  getReport: (id: string) =>
+    request<PassengerReport>(`passenger-reports/${id}`),
 };

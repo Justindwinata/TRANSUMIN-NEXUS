@@ -19,7 +19,11 @@ type TestSummary = Readonly<{
 export function runNodeTests(
   command: string,
   args: readonly string[],
-  options: Readonly<{ cwd: string; env: NodeJS.ProcessEnv; timeoutMs?: number }>,
+  options: Readonly<{
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+  }>,
 ): Promise<NodeTestResult> {
   return new Promise((resolve, reject) => {
     // node:test marks test processes with NODE_TEST_CONTEXT; an inherited copy
@@ -96,25 +100,25 @@ export function runNodeTests(
         counts?.failed !== 0 ||
         counts.cancelled !== 0
       ) {
-      const reasons = [
-        timedOut ? 'timeout' : null,
-        code === 0 ? null : `exit=${String(code)}`,
-        signal === null ? null : `signal=${signal}`,
-        failedEvent ? 'test-fail-event' : null,
-        summary?.success === false ? 'summary-failure' : null,
-        counts !== undefined && counts.failed !== 0 ? 'counts-failed' : null,
-        counts !== undefined && counts.cancelled !== 0
-          ? 'counts-cancelled'
-          : null,
-        counts === undefined ? 'missing-summary' : null,
-      ].filter((entry): entry is string => entry !== null);
-      finish(() =>
-        reject(
-          new Error(
-            `${command} tests failed [${reasons.join(',')}]: exit=${String(code)} signal=${String(signal)} summary=${JSON.stringify(summary ?? null)} stderr=${stderr.slice(-500)}`,
+        const reasons = [
+          timedOut ? 'timeout' : null,
+          code === 0 ? null : `exit=${String(code)}`,
+          signal === null ? null : `signal=${signal}`,
+          failedEvent ? 'test-fail-event' : null,
+          summary?.success === false ? 'summary-failure' : null,
+          counts !== undefined && counts.failed !== 0 ? 'counts-failed' : null,
+          counts !== undefined && counts.cancelled !== 0
+            ? 'counts-cancelled'
+            : null,
+          counts === undefined ? 'missing-summary' : null,
+        ].filter((entry): entry is string => entry !== null);
+        finish(() =>
+          reject(
+            new Error(
+              `${command} tests failed [${reasons.join(',')}]: exit=${String(code)} signal=${String(signal)} summary=${JSON.stringify(summary ?? null)} stderr=${stderr.slice(-500)}`,
+            ),
           ),
-        ),
-      );
+        );
         return;
       }
       finish(() =>

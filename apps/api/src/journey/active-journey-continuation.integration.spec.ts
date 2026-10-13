@@ -40,9 +40,9 @@ const ids = {
 const acceptedAt = '2026-10-13T04:00:00.000Z';
 
 before(async () => {
-  const identity = await sql<{ name: string }>`select current_database() as name`.execute(
-    database,
-  );
+  const identity = await sql<{
+    name: string;
+  }>`select current_database() as name`.execute(database);
   assert.match(
     identity.rows[0]?.name ?? '',
     /^tnx_lightweight_[0-9a-f]{32}$/,
@@ -188,50 +188,126 @@ describe('active journey accepted continuation (Tier A SIMULATED)', () => {
     const original = (await journeys.get(ids.journey, ids.owner)).originalPlan;
     const suffix = journeyJson(ids.replacementEntity)!;
     const transit = { ...suffix.legs[0]!, sequence: 1 };
-    const walk = { ...transit, sequence: 0, mode: 'WALK' as const, otpMode: 'WALK', entityBindings: [], routeId: null, tripId: null };
+    const walk = {
+      ...transit,
+      sequence: 0,
+      mode: 'WALK' as const,
+      otpMode: 'WALK',
+      entityBindings: [],
+      routeId: null,
+      tripId: null,
+    };
     const replacement = { ...suffix, legs: [walk, transit] };
     await repository.accept({
-      recoveryId: ids.recovery, ownerRef: ids.owner, idempotencyKey: 'continuation-accept-key',
-      progressRevision: 2, acceptedJourney: replacement,
-      acceptedJourneyFingerprint: ids.proposalFingerprint, acceptedAt,
+      recoveryId: ids.recovery,
+      ownerRef: ids.owner,
+      idempotencyKey: 'continuation-accept-key',
+      progressRevision: 2,
+      acceptedJourney: replacement,
+      acceptedJourneyFingerprint: ids.proposalFingerprint,
+      acceptedAt,
     });
     const accepted = await journeys.get(ids.journey, ids.owner);
     assert.deepEqual(accepted.originalPlan, original);
     assert.equal(accepted.planFingerprint, ids.planFingerprint);
-    assert.deepEqual(accepted.currentPlan!.legs.map(l => l.sequence), [0, 1, 2]);
+    assert.deepEqual(
+      accepted.currentPlan!.legs.map((l) => l.sequence),
+      [0, 1, 2],
+    );
     assert.deepEqual(accepted.currentPlan!.legs[0], original.legs[0]);
     assert.equal(accepted.currentPlan!.legs[1]!.mode, 'WALK');
-    assert.equal(accepted.currentPlan!.legs[2]!.entityBindings[0]!.mobilityEntityId, ids.replacementEntity);
+    assert.equal(
+      accepted.currentPlan!.legs[2]!.entityBindings[0]!.mobilityEntityId,
+      ids.replacementEntity,
+    );
     assert.equal(accepted.progress.completedLegCount, 1);
     assert.equal(accepted.progress.currentLegSequence, 1);
     assert.equal(accepted.progress.revision, 2);
-    assert.deepEqual(accepted.dependencies.map(d => [d.legSequence, d.mobilityEntityId]), [[2, ids.replacementEntity]]);
-    const action = { journeyId: ids.journey, ownerRef: ids.owner, legSequence: 1, confirmedAt: acceptedAt };
-    await assert.rejects(journeys.confirmBoarding(action), { code: 'STALE_ROUTE' });
-    await assert.rejects(journeys.confirmAlighting(action), { code: 'STALE_ROUTE' });
-    await assert.rejects(journeys.updateProgress({ journeyId: ids.journey, ownerRef: ids.owner,
-      completedLegCount: 2, currentLegSequence: 2, recordedAt: acceptedAt }), { code: 'STALE_ROUTE' });
-    await assert.rejects(journeys.confirmBoarding({ ...action, acceptedRecoveryId: ids.recovery }), { code: 'INVALID_BOARDING' });
-    const walkDone = await journeys.updateProgress({ journeyId: ids.journey, ownerRef: ids.owner,
-      completedLegCount: 2, currentLegSequence: 2, recordedAt: acceptedAt, acceptedRecoveryId: ids.recovery });
+    assert.deepEqual(
+      accepted.dependencies.map((d) => [d.legSequence, d.mobilityEntityId]),
+      [[2, ids.replacementEntity]],
+    );
+    const action = {
+      journeyId: ids.journey,
+      ownerRef: ids.owner,
+      legSequence: 1,
+      confirmedAt: acceptedAt,
+    };
+    await assert.rejects(journeys.confirmBoarding(action), {
+      code: 'STALE_ROUTE',
+    });
+    await assert.rejects(journeys.confirmAlighting(action), {
+      code: 'STALE_ROUTE',
+    });
+    await assert.rejects(
+      journeys.updateProgress({
+        journeyId: ids.journey,
+        ownerRef: ids.owner,
+        completedLegCount: 2,
+        currentLegSequence: 2,
+        recordedAt: acceptedAt,
+      }),
+      { code: 'STALE_ROUTE' },
+    );
+    await assert.rejects(
+      journeys.confirmBoarding({ ...action, acceptedRecoveryId: ids.recovery }),
+      { code: 'INVALID_BOARDING' },
+    );
+    const walkDone = await journeys.updateProgress({
+      journeyId: ids.journey,
+      ownerRef: ids.owner,
+      completedLegCount: 2,
+      currentLegSequence: 2,
+      recordedAt: acceptedAt,
+      acceptedRecoveryId: ids.recovery,
+    });
     assert.equal(walkDone.lifecycleStatus, 'ACTIVE');
-    const transitAction = { ...action, legSequence: 2, acceptedRecoveryId: ids.recovery };
-    await assert.rejects(journeys.confirmAlighting(transitAction), { code: 'INVALID_BOARDING' });
-    await assert.rejects(journeys.updateProgress({ journeyId: ids.journey, ownerRef: ids.owner,
-      completedLegCount: 3, currentLegSequence: null, recordedAt: acceptedAt, acceptedRecoveryId: ids.recovery }), { code: 'INVALID_PROGRESS' });
+    const transitAction = {
+      ...action,
+      legSequence: 2,
+      acceptedRecoveryId: ids.recovery,
+    };
+    await assert.rejects(journeys.confirmAlighting(transitAction), {
+      code: 'INVALID_BOARDING',
+    });
+    await assert.rejects(
+      journeys.updateProgress({
+        journeyId: ids.journey,
+        ownerRef: ids.owner,
+        completedLegCount: 3,
+        currentLegSequence: null,
+        recordedAt: acceptedAt,
+        acceptedRecoveryId: ids.recovery,
+      }),
+      { code: 'INVALID_PROGRESS' },
+    );
     const boarded = await journeys.confirmBoarding(transitAction);
     assert.equal(boarded.progress.boardingConfirmedLegSequence, 2);
     const retried = await journeys.confirmBoarding(transitAction);
     assert.equal(retried.progress.revision, boarded.progress.revision);
     const exited = await journeys.confirmAlighting(transitAction);
     assert.equal(exited.progress.alightingConfirmedLegSequence, 2);
-    const completed = await journeys.updateProgress({ journeyId: ids.journey, ownerRef: ids.owner,
-      completedLegCount: 3, currentLegSequence: null, recordedAt: acceptedAt, acceptedRecoveryId: ids.recovery });
+    const completed = await journeys.updateProgress({
+      journeyId: ids.journey,
+      ownerRef: ids.owner,
+      completedLegCount: 3,
+      currentLegSequence: null,
+      recordedAt: acceptedAt,
+      acceptedRecoveryId: ids.recovery,
+    });
     assert.equal(completed.lifecycleStatus, 'COMPLETED');
     assert.deepEqual(completed.originalPlan, original);
     assert.deepEqual(completed.currentPlan, accepted.currentPlan);
-    const impact = await sql<{ resolved: Date | null }>`select resolved_at as resolved from journey.journey_impact where id=${ids.impact}::uuid`.execute(database);
-    assert.equal(impact.rows[0]!.resolved, null, 'Acceptance must not resolve blocking state');
+    const impact = await sql<{
+      resolved: Date | null;
+    }>`select resolved_at as resolved from journey.journey_impact where id=${ids.impact}::uuid`.execute(
+      database,
+    );
+    assert.equal(
+      impact.rows[0]!.resolved,
+      null,
+      'Acceptance must not resolve blocking state',
+    );
   });
 });
 

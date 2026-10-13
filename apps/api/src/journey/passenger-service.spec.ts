@@ -1,14 +1,22 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import { after, before, it } from 'node:test';
-import { Controller, Get, Module, UseGuards, type ExecutionContext } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Module,
+  UseGuards,
+  type ExecutionContext,
+} from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { PassengerServiceGuard } from './interface/passenger-service.guard.js';
 
 @Controller('protected')
 @UseGuards(PassengerServiceGuard)
 class ProtectedController {
-  @Get() get() { return { ok: true }; }
+  @Get() get() {
+    return { ok: true };
+  }
 }
 @Module({ controllers: [ProtectedController] })
 class TestModule {}
@@ -29,18 +37,36 @@ after(async () => {
 });
 it('HTTP owner spoofing cannot bypass missing or invalid service identity', async () => {
   for (const token of [undefined, 'wrong', 't'.repeat(63)]) {
-    const headers: Record<string, string> = { 'x-journey-owner': 'passenger:victim' };
+    const headers: Record<string, string> = {
+      'x-journey-owner': 'passenger:victim',
+    };
     if (token !== undefined) headers['x-passenger-service-token'] = token;
     assert.equal((await fetch(url, { headers })).status, 401);
   }
-  assert.equal((await fetch(url, { headers: { 'x-passenger-service-token': 't'.repeat(64) } })).status, 200);
+  assert.equal(
+    (
+      await fetch(url, {
+        headers: { 'x-passenger-service-token': 't'.repeat(64) },
+      })
+    ).status,
+    200,
+  );
 });
 it('unset/short service token fails closed', () => {
   const guard = new PassengerServiceGuard();
-  const context = { switchToHttp: () => ({ getRequest: () => ({ headers: { 'x-passenger-service-token': 't'.repeat(64) } }) }) } as unknown as ExecutionContext;
+  const context = {
+    switchToHttp: () => ({
+      getRequest: () => ({
+        headers: { 'x-passenger-service-token': 't'.repeat(64) },
+      }),
+    }),
+  } as unknown as ExecutionContext;
   for (const expected of ['', 'short']) {
     process.env.PASSENGER_SERVICE_TOKEN = expected;
-    assert.throws(() => guard.canActivate(context), /PASSENGER_SERVICE_TOKEN_REQUIRED/);
+    assert.throws(
+      () => guard.canActivate(context),
+      /PASSENGER_SERVICE_TOKEN_REQUIRED/,
+    );
   }
   process.env.PASSENGER_SERVICE_TOKEN = 't'.repeat(64);
 });

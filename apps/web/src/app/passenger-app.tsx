@@ -83,7 +83,14 @@ export function PassengerApp() {
     'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'OFFLINE'
   >('OFFLINE');
   const [busy, setBusy] = useState<
-    'search' | 'activate' | 'progress' | 'boarding' | 'alighting' | 'recovery' | 'report' | null
+    | 'search'
+    | 'activate'
+    | 'progress'
+    | 'boarding'
+    | 'alighting'
+    | 'recovery'
+    | 'report'
+    | null
   >(null);
   const [gps, setGps] = useState<
     | { state: 'OFF' }
@@ -91,7 +98,13 @@ export function PassengerApp() {
     | { state: 'DENIED' }
     | { state: 'UNAVAILABLE' }
     | { state: 'ERROR'; detail: string }
-    | { state: 'READY'; latitude: number; longitude: number; accuracyMeters: number; at: string }
+    | {
+        state: 'READY';
+        latitude: number;
+        longitude: number;
+        accuracyMeters: number;
+        at: string;
+      }
   >({ state: 'OFF' });
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -145,7 +158,9 @@ export function PassengerApp() {
         .catch((cause: unknown) => {
           if (cause instanceof PassengerApiError && cause.status === 404) {
             localStorage.removeItem(journeyKey);
-            setError('Perjalanan tersimpan tidak ditemukan. Silakan mulai lagi.');
+            setError(
+              'Perjalanan tersimpan tidak ditemukan. Silakan mulai lagi.',
+            );
           } else {
             setError(errorMessage(cause));
           }
@@ -314,8 +329,7 @@ export function PassengerApp() {
     try {
       const historical = Date.parse(selected.start_at) < Date.now() - 60_000;
       const keyName = `${activationKey}.${selected.journey_id}`;
-      const attemptKey =
-        localStorage.getItem(keyName) ?? crypto.randomUUID();
+      const attemptKey = localStorage.getItem(keyName) ?? crypto.randomUUID();
       localStorage.setItem(keyName, attemptKey);
       const journey = await passengerApi.activate(
         selected,
@@ -529,7 +543,9 @@ export function PassengerApp() {
         }. Status menunjukkan peninjauan, bukan penutupan layanan.`,
       );
     } catch (cause) {
-      setReportsError(`Status laporan tidak dapat dimuat ulang: ${errorMessage(cause)}`);
+      setReportsError(
+        `Status laporan tidak dapat dimuat ulang: ${errorMessage(cause)}`,
+      );
     } finally {
       setBusy(null);
     }
@@ -573,7 +589,11 @@ export function PassengerApp() {
   }
 
   async function acceptRecovery() {
-    if (!active || !recovery || recovery.original_journey_id !== active.journey_id)
+    if (
+      !active ||
+      !recovery ||
+      recovery.original_journey_id !== active.journey_id
+    )
       return;
     if (recovery.status !== 'COMPLETED' || !recovery.proposed_journey) {
       setError(
@@ -582,7 +602,9 @@ export function PassengerApp() {
       return;
     }
     if (active.progress?.revision !== recovery.progress_revision) {
-      setError('Perjalanan sudah berubah sejak proposal ini. Minta recovery baru.');
+      setError(
+        'Perjalanan sudah berubah sejak proposal ini. Minta recovery baru.',
+      );
       return;
     }
     setBusy('recovery');
@@ -618,24 +640,33 @@ export function PassengerApp() {
     }
   }
 
-  const displayed = selected ?? active;  const displayingActive =
+  const displayed = selected ?? active;
+  const displayingActive =
     !!displayed && !!active && displayed.journey_id === active.journey_id;
   const completed = active?.progress?.completed_segment_count ?? 0;
   const currentLeg =
     displayingActive && active.status === 'ACTIVE'
-      ? (active.segments.find(
-          (segment) => segment.sequence === completed,
-        ) ?? null)
+      ? (active.segments.find((segment) => segment.sequence === completed) ??
+        null)
       : null;
-  const boardedLeg = active?.progress?.boarding_confirmed_segment_sequence ?? null;
-  const alightedLeg = active?.progress?.alighting_confirmed_segment_sequence ?? null;
+  const boardedLeg =
+    active?.progress?.boarding_confirmed_segment_sequence ?? null;
+  const alightedLeg =
+    active?.progress?.alighting_confirmed_segment_sequence ?? null;
   const journeyFinished = active?.status === 'COMPLETED';
   const isTransitLeg = currentLeg !== null && currentLeg.mode !== 'WALK';
-  const currentBoarded = currentLeg !== null && boardedLeg === currentLeg.sequence;
-  const currentAlighted = currentLeg !== null && alightedLeg === currentLeg.sequence;
+  const currentBoarded =
+    currentLeg !== null && boardedLeg === currentLeg.sequence;
+  const currentAlighted =
+    currentLeg !== null && alightedLeg === currentLeg.sequence;
   const easiestIds = easiestAmongShown(alternatives);
-  const reportTargets = active?.status === 'ACTIVE' ? remainingReportTargets(active, completed) : [];
-  const reportTargetValid = reportTargets.some((item) => item.key === reportTargetKey);
+  const reportTargets =
+    active?.status === 'ACTIVE'
+      ? remainingReportTargets(active, completed)
+      : [];
+  const reportTargetValid = reportTargets.some(
+    (item) => item.key === reportTargetKey,
+  );
   const currentAlerts = alerts.filter(alertIsCurrent);
   const historicalAlerts = alerts.filter((alert) => !alertIsCurrent(alert));
   return (
@@ -977,7 +1008,9 @@ export function PassengerApp() {
                           required
                           type="datetime-local"
                           value={progressAt}
-                          onChange={(event) => setProgressAt(event.target.value)}
+                          onChange={(event) =>
+                            setProgressAt(event.target.value)
+                          }
                           onInput={(event) =>
                             setProgressAt(event.currentTarget.value)
                           }
@@ -995,7 +1028,9 @@ export function PassengerApp() {
                           disabled={busy !== null}
                           onClick={() => void confirmBoarding()}
                         >
-                          {busy === 'boarding' ? 'Menyimpan…' : 'Saya Sudah Naik'}
+                          {busy === 'boarding'
+                            ? 'Menyimpan…'
+                            : 'Saya Sudah Naik'}
                         </button>
                       )}
                       {isTransitLeg && currentBoarded && !currentAlighted && (
@@ -1005,24 +1040,33 @@ export function PassengerApp() {
                           disabled={busy !== null}
                           onClick={() => void confirmAlighting()}
                         >
-                          {busy === 'alighting' ? 'Menyimpan…' : 'Saya Sudah Turun'}
+                          {busy === 'alighting'
+                            ? 'Menyimpan…'
+                            : 'Saya Sudah Turun'}
                         </button>
                       )}
                       {isTransitLeg && currentAlighted && (
                         <button
                           type="button"
                           className="primary-button full"
-                          disabled={busy !== null || completed + 1 > active.segments.length}
+                          disabled={
+                            busy !== null ||
+                            completed + 1 > active.segments.length
+                          }
                           onClick={() => void advanceLeg()}
                         >
-                          {busy === 'progress' ? 'Menyimpan…' : 'Lanjutkan Perjalanan'}
+                          {busy === 'progress'
+                            ? 'Menyimpan…'
+                            : 'Lanjutkan Perjalanan'}
                         </button>
                       )}
                       {!isTransitLeg && (
                         <button
                           type="button"
                           className="primary-button full"
-                          disabled={busy !== null || completed >= active.segments.length}
+                          disabled={
+                            busy !== null || completed >= active.segments.length
+                          }
                           onClick={() => void advanceLeg()}
                         >
                           {busy === 'progress'
@@ -1048,7 +1092,9 @@ export function PassengerApp() {
                             Bagikan lokasi perangkat sekali ini
                           </button>
                         )}
-                        {gps.state === 'REQUESTING' && <p>Meminta izin lokasi…</p>}
+                        {gps.state === 'REQUESTING' && (
+                          <p>Meminta izin lokasi…</p>
+                        )}
                         {gps.state === 'DENIED' && (
                           <p className="feedback error" role="alert">
                             Izin lokasi ditolak. Lanjutkan menandai perjalanan
@@ -1084,20 +1130,39 @@ export function PassengerApp() {
             </>
           )}
           {active?.status === 'ACTIVE' && (
-            <section className="operational-section" aria-labelledby="report-heading">
+            <section
+              className="operational-section"
+              aria-labelledby="report-heading"
+            >
               <div className="section-line">
                 <h2 id="report-heading">Laporkan kondisi</h2>
                 <span>{reports.length} tersimpan</span>
               </div>
               <p className="fine-print">
-                Laporan penumpang bersifat <strong>belum terverifikasi</strong> dan tidak otomatis menutup atau mengubah layanan. Laporan hanya tercatat pada perjalanan aktif dan tidak memerlukan lokasi perangkat.
+                Laporan penumpang bersifat <strong>belum terverifikasi</strong>{' '}
+                dan tidak otomatis menutup atau mengubah layanan. Laporan hanya
+                tercatat pada perjalanan aktif dan tidak memerlukan lokasi
+                perangkat.
               </p>
               {reportTargets.length === 0 ? (
-                <p className="empty-state">Tidak ada target sisa perjalanan yang dapat dilaporkan. Selesaikan atau mulai perjalanan baru untuk melaporkan kondisi.</p>
+                <p className="empty-state">
+                  Tidak ada target sisa perjalanan yang dapat dilaporkan.
+                  Selesaikan atau mulai perjalanan baru untuk melaporkan
+                  kondisi.
+                </p>
               ) : (
-                <form onSubmit={(event) => void submitPassengerReport(event)} noValidate aria-describedby="report-help">
-                  <p id="report-help" className="fine-print">Pilih lokasi atau layanan pada sisa perjalanan. Laporan tersimpan di server dan dimuat ulang saat halaman di-refresh.</p>
-                  <label htmlFor="report-target">Lokasi atau layanan pada sisa perjalanan
+                <form
+                  onSubmit={(event) => void submitPassengerReport(event)}
+                  noValidate
+                  aria-describedby="report-help"
+                >
+                  <p id="report-help" className="fine-print">
+                    Pilih lokasi atau layanan pada sisa perjalanan. Laporan
+                    tersimpan di server dan dimuat ulang saat halaman
+                    di-refresh.
+                  </p>
+                  <label htmlFor="report-target">
+                    Lokasi atau layanan pada sisa perjalanan
                     <select
                       id="report-target"
                       required
@@ -1119,9 +1184,14 @@ export function PassengerApp() {
                     </select>
                   </label>
                   <p id="report-target-help" className="fine-print">
-                    Hanya sisa bagian perjalanan yang ditampilkan. Provenance target terpilih: {reportTargets.find((t) => t.key === reportTargetKey)?.provenance ?? '— pilih target sisa perjalanan untuk melihat provenance'}
+                    Hanya sisa bagian perjalanan yang ditampilkan. Provenance
+                    target terpilih:{' '}
+                    {reportTargets.find((t) => t.key === reportTargetKey)
+                      ?.provenance ??
+                      '— pilih target sisa perjalanan untuk melihat provenance'}
                   </p>
-                  <label htmlFor="report-category">Kategori laporan
+                  <label htmlFor="report-category">
+                    Kategori laporan
                     <select
                       id="report-category"
                       value={reportCategory}
@@ -1138,7 +1208,8 @@ export function PassengerApp() {
                       <option value="OTHER">Lainnya</option>
                     </select>
                   </label>
-                  <label htmlFor="report-observed-at">Waktu kejadian (WIB)
+                  <label htmlFor="report-observed-at">
+                    Waktu kejadian (WIB)
                     <input
                       id="report-observed-at"
                       type="datetime-local"
@@ -1150,7 +1221,8 @@ export function PassengerApp() {
                       }}
                     />
                   </label>
-                  <label htmlFor="report-description">Keterangan
+                  <label htmlFor="report-description">
+                    Keterangan
                     <textarea
                       id="report-description"
                       required
@@ -1162,12 +1234,28 @@ export function PassengerApp() {
                         reportKey.current = null;
                       }}
                       aria-describedby="report-description-help"
-                      aria-invalid={reportDescription.trim().length === 0 || reportDescription.length > 2000 ? undefined : 'false'}
+                      aria-invalid={
+                        reportDescription.trim().length === 0 ||
+                        reportDescription.length > 2000
+                          ? undefined
+                          : 'false'
+                      }
                       placeholder="Jelaskan kondisi yang Anda amati pada layanan atau lokasi terpilih"
                     />
                   </label>
-                  <p id="report-description-help" className="fine-print">{reportDescription.length}/2000 karakter · minimal 1 karakter, tanpa karakter kontrol.</p>
-                  <button className="primary-button full" type="submit" disabled={busy !== null || !reportTargetValid || !reportDescription.trim()}>
+                  <p id="report-description-help" className="fine-print">
+                    {reportDescription.length}/2000 karakter · minimal 1
+                    karakter, tanpa karakter kontrol.
+                  </p>
+                  <button
+                    className="primary-button full"
+                    type="submit"
+                    disabled={
+                      busy !== null ||
+                      !reportTargetValid ||
+                      !reportDescription.trim()
+                    }
+                  >
                     {busy === 'report' ? 'Mengirim…' : 'Kirim laporan'}
                   </button>
                 </form>
@@ -1182,7 +1270,11 @@ export function PassengerApp() {
                   {reportStatus}
                 </p>
               )}
-              <div className="report-list" aria-live="polite" aria-busy={reportsLoading ? 'true' : 'false'}>
+              <div
+                className="report-list"
+                aria-live="polite"
+                aria-busy={reportsLoading ? 'true' : 'false'}
+              >
                 {reportsLoading && (
                   <p role="status" className="fine-print">
                     Memuat laporan…
@@ -1191,36 +1283,79 @@ export function PassengerApp() {
                 {reportsError && (
                   <div className="feedback error" role="alert">
                     <p>{reportsError}</p>
-                    <button type="button" className="text-button" onClick={() => active && void loadPersistedReports(active.journey_id)} disabled={reportsLoading}>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() =>
+                        active && void loadPersistedReports(active.journey_id)
+                      }
+                      disabled={reportsLoading}
+                    >
                       Coba lagi
                     </button>
                   </div>
                 )}
                 {!reportsLoading && !reportsError && reports.length === 0 && (
-                  <p className="empty-state">Belum ada laporan untuk perjalanan ini. Laporan yang dikirim akan muncul di sini dan tetap ada setelah refresh.</p>
+                  <p className="empty-state">
+                    Belum ada laporan untuk perjalanan ini. Laporan yang dikirim
+                    akan muncul di sini dan tetap ada setelah refresh.
+                  </p>
                 )}
                 {reports.map((report) => (
-                  <article className="alert-card" key={report.report_id} aria-label={`Laporan ${report.report_id}`}>
+                  <article
+                    className="alert-card"
+                    key={report.report_id}
+                    aria-label={`Laporan ${report.report_id}`}
+                  >
                     <div className="alert-topline">
                       <strong>
-                        {report.category} · {report.verification_status === 'REPORTED_UNVERIFIED' ? 'Belum diverifikasi' : 'Terverifikasi terkendali'}
+                        {report.category} ·{' '}
+                        {report.verification_status === 'REPORTED_UNVERIFIED'
+                          ? 'Belum diverifikasi'
+                          : 'Terverifikasi terkendali'}
                       </strong>
-                      <span className={report.verification_status === 'REPORTED_UNVERIFIED' ? 'evidence simulated' : 'evidence'}>
-                        {report.verification_status === 'REPORTED_UNVERIFIED' ? 'Belum diverifikasi' : 'Terverifikasi'}
+                      <span
+                        className={
+                          report.verification_status === 'REPORTED_UNVERIFIED'
+                            ? 'evidence simulated'
+                            : 'evidence'
+                        }
+                      >
+                        {report.verification_status === 'REPORTED_UNVERIFIED'
+                          ? 'Belum diverifikasi'
+                          : 'Terverifikasi'}
                       </span>
                     </div>
                     <p>{report.description}</p>
                     <small>
-                      Target: {report.mobility_entity_id} · {report.entity_type} · diamati {formatClock(report.observed_at)} · diterima {formatClock(report.received_at)}
+                      Target: {report.mobility_entity_id} · {report.entity_type}{' '}
+                      · diamati {formatClock(report.observed_at)} · diterima{' '}
+                      {formatClock(report.received_at)}
                     </small>
-                    <small className="fine-print">Laporan bukan konfirmasi penutupan layanan.</small>
-                    <button className="text-button" type="button" disabled={busy === 'report'} onClick={() => void refreshPassengerReport(report.report_id)}>
+                    <small className="fine-print">
+                      Laporan bukan konfirmasi penutupan layanan.
+                    </small>
+                    <button
+                      className="text-button"
+                      type="button"
+                      disabled={busy === 'report'}
+                      onClick={() =>
+                        void refreshPassengerReport(report.report_id)
+                      }
+                    >
                       Muat ulang status
                     </button>
                   </article>
                 ))}
               </div>
-              <button type="button" className="text-button" onClick={() => active && void loadPersistedReports(active.journey_id)} disabled={reportsLoading || !active}>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() =>
+                  active && void loadPersistedReports(active.journey_id)
+                }
+                disabled={reportsLoading || !active}
+              >
                 Muat ulang daftar laporan
               </button>
             </section>
@@ -1368,13 +1503,15 @@ export function PassengerApp() {
                     fresh recovery before using it.
                   </p>
                 )}
-                {recovery.status === 'COMPLETED' && recovery.proposed_journey && (
-                  acceptance || recovery.accepted ? (
+                {recovery.status === 'COMPLETED' &&
+                  recovery.proposed_journey &&
+                  (acceptance || recovery.accepted ? (
                     <p className="feedback" role="status">
                       Recovery accepted{' '}
                       {formatClock(
                         acceptance?.accepted_at ?? recovery.accepted_at!,
-                      )}. The original plan stays saved; your active journey now
+                      )}
+                      . The original plan stays saved; your active journey now
                       follows the repaired route.
                     </p>
                   ) : (
@@ -1383,8 +1520,7 @@ export function PassengerApp() {
                       className="primary-button full"
                       disabled={
                         busy !== null ||
-                        active.progress?.revision !==
-                          recovery.progress_revision
+                        active.progress?.revision !== recovery.progress_revision
                       }
                       onClick={() => void acceptRecovery()}
                     >
@@ -1392,8 +1528,7 @@ export function PassengerApp() {
                         ? 'Applying the repaired route...'
                         : 'Use this repaired route'}
                     </button>
-                  )
-                )}
+                  ))}
                 <div className="comparison-grid">
                   <div>
                     <h3>Original remaining trip</h3>

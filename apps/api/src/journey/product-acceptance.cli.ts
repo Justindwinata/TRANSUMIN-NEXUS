@@ -188,23 +188,34 @@ async function main() {
     const sourceSize = await admin
       .query('select pg_database_size($1)::bigint as bytes', [SOURCE])
       .then((r) => Number(r.rows[0]?.bytes ?? 0));
-    const hostAvailable = Number(
-      execFileSync('df', ['-k', '/'], { encoding: 'utf8' })
-        .trim()
-        .split('\n').at(-1)!
-        .trim().split(/\s+/)
-        .at(-3),
-    ) * 1024;
-    const dockerAvailable = Number(
-      execFileSync(
-        'docker',
-        ['exec', CONTAINER, 'df', '-k', '--output=avail', '/var/lib/postgresql/data'],
-        { encoding: 'utf8' },
-      )
-        .trim()
-        .split('\n')
-        .at(-1),
-    ) * 1024;
+    const hostAvailable =
+      Number(
+        execFileSync('df', ['-k', '/'], { encoding: 'utf8' })
+          .trim()
+          .split('\n')
+          .at(-1)!
+          .trim()
+          .split(/\s+/)
+          .at(-3),
+      ) * 1024;
+    const dockerAvailable =
+      Number(
+        execFileSync(
+          'docker',
+          [
+            'exec',
+            CONTAINER,
+            'df',
+            '-k',
+            '--output=avail',
+            '/var/lib/postgresql/data',
+          ],
+          { encoding: 'utf8' },
+        )
+          .trim()
+          .split('\n')
+          .at(-1),
+      ) * 1024;
     const safetyReserve = 8 * 1024 ** 3;
     assert.ok(
       Number.isFinite(sourceSize) &&
@@ -303,7 +314,15 @@ async function main() {
     );
     web = spawn(
       'pnpm',
-      ['--filter', '@transum-in/web', 'exec', 'next', 'start', '--port', '3002'],
+      [
+        '--filter',
+        '@transum-in/web',
+        'exec',
+        'next',
+        'start',
+        '--port',
+        '3002',
+      ],
       { cwd: ROOT, env: webEnv, detached: true, stdio: 'ignore' },
     );
     const wait = async (url: string, child: ReturnType<typeof spawn>) => {

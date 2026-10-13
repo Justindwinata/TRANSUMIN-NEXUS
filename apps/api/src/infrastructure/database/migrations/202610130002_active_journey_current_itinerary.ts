@@ -40,7 +40,9 @@ export async function up(database: Kysely<unknown>): Promise<void> {
       constraint active_journey_dependency_unique unique (recovery_id, leg_sequence, mobility_entity_id)
     )
   `.execute(database);
-  await sql`create index active_journey_dependency_entity_idx on journey.active_journey_dependency (mobility_entity_id, journey_id, leg_sequence)`.execute(database);
+  await sql`create index active_journey_dependency_entity_idx on journey.active_journey_dependency (mobility_entity_id, journey_id, leg_sequence)`.execute(
+    database,
+  );
   await sql`
     create table journey.current_impact_dependency (
       impact_id uuid not null references journey.journey_impact(id) on delete restrict,
@@ -128,13 +130,25 @@ export async function up(database: Kysely<unknown>): Promise<void> {
     before update of accepted_recovery_id on journey.active_journey
     for each row execute function journey.materialize_accepted_itinerary()
   `.execute(database);
-  await sql`update journey.active_journey set accepted_recovery_id=accepted_recovery_id where accepted_recovery_id is not null`.execute(database);
+  await sql`update journey.active_journey set accepted_recovery_id=accepted_recovery_id where accepted_recovery_id is not null`.execute(
+    database,
+  );
 }
 
 export async function down(database: Kysely<unknown>): Promise<void> {
-  await sql`drop trigger if exists active_journey_materialize_accepted_itinerary on journey.active_journey`.execute(database);
-  await sql`drop function if exists journey.materialize_accepted_itinerary()`.execute(database);
-  await sql`drop table if exists journey.current_impact_dependency`.execute(database);
-  await sql`drop table if exists journey.active_journey_dependency`.execute(database);
-  await sql`alter table journey.active_journey drop constraint if exists active_journey_current_pointer_check, drop constraint if exists active_journey_current_itinerary_check, drop constraint if exists active_journey_accepted_before_check, drop column if exists current_itinerary_json, drop column if exists accepted_before_leg_count`.execute(database);
+  await sql`drop trigger if exists active_journey_materialize_accepted_itinerary on journey.active_journey`.execute(
+    database,
+  );
+  await sql`drop function if exists journey.materialize_accepted_itinerary()`.execute(
+    database,
+  );
+  await sql`drop table if exists journey.current_impact_dependency`.execute(
+    database,
+  );
+  await sql`drop table if exists journey.active_journey_dependency`.execute(
+    database,
+  );
+  await sql`alter table journey.active_journey drop constraint if exists active_journey_current_pointer_check, drop constraint if exists active_journey_current_itinerary_check, drop constraint if exists active_journey_accepted_before_check, drop column if exists current_itinerary_json, drop column if exists accepted_before_leg_count`.execute(
+    database,
+  );
 }

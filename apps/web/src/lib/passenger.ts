@@ -63,7 +63,9 @@ export function remainingReportTargets(
 
 export function isValidReportDescription(value: string): boolean {
   const trimmed = value.trim();
-  return trimmed.length >= 1 && trimmed.length <= 2000 && !/\p{Cc}/u.test(value);
+  return (
+    trimmed.length >= 1 && trimmed.length <= 2000 && !/\p{Cc}/u.test(value)
+  );
 }
 
 const names: Record<JourneySegment['mode'], string> = {

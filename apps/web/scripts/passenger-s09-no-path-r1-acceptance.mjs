@@ -116,14 +116,16 @@ async function controlled(reportId, action, payload) {
   );
 }
 async function uiMutation(button, suffix, method) {
-  const wait = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/api/passenger/${suffix}`) &&
-      response.request().method() === method,
-    { timeout: 120_000 },
-  );
-  await page.getByRole('button', { name: button, exact: true }).click();
-  return jsonResponse(await wait);
+  const [response] = await Promise.all([
+    page.waitForResponse(
+      (candidate) =>
+        candidate.url().endsWith(`/api/passenger/${suffix}`) &&
+        candidate.request().method() === method,
+      { timeout: 120_000 },
+    ),
+    page.getByRole('button', { name: button, exact: true }).first().click(),
+  ]);
+  return jsonResponse(response);
 }
 function jakarta(at) {
   return new Date(Date.parse(at) + 7 * 3600_000).toISOString().slice(0, 16);

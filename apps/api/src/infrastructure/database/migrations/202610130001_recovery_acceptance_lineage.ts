@@ -43,7 +43,9 @@ export async function up(database: Kysely<unknown>): Promise<void> {
         (accepted_recovery_id is null) = (recovery_accepted_at is null)
       )
   `.execute(database);
-  await sql`create index recovery_acceptance_journey_idx on recovery.recovery_acceptance (active_journey_id, accepted_at desc)`.execute(database);
+  await sql`create index recovery_acceptance_journey_idx on recovery.recovery_acceptance (active_journey_id, accepted_at desc)`.execute(
+    database,
+  );
   await sql`
     alter table journey.journey_state_event
       drop constraint if exists journey_state_event_type_check,
@@ -61,6 +63,10 @@ export async function down(database: Kysely<unknown>): Promise<void> {
         event_type in ('ACTIVATED','PROGRESS_UPDATED','BOARDED','ALIGHTED','COMPLETED','CANCELLED','IMPACT_DETECTED')
       )
   `.execute(database);
-  await sql`alter table journey.active_journey drop constraint if exists active_journey_recovery_pointer_check, drop constraint if exists active_journey_accepted_recovery_fk, drop column if exists recovery_accepted_at, drop column if exists accepted_recovery_id`.execute(database);
-  await sql`drop table if exists recovery.recovery_acceptance`.execute(database);
+  await sql`alter table journey.active_journey drop constraint if exists active_journey_recovery_pointer_check, drop constraint if exists active_journey_accepted_recovery_fk, drop column if exists recovery_accepted_at, drop column if exists accepted_recovery_id`.execute(
+    database,
+  );
+  await sql`drop table if exists recovery.recovery_acceptance`.execute(
+    database,
+  );
 }

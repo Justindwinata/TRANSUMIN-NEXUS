@@ -51,9 +51,13 @@ function ownerFor(
   if (cookieValue) {
     const separator = cookieValue.lastIndexOf('.');
     if (
-      separator > 0
-      && verify(cookieValue.slice(separator + 1), cookieValue.slice(0, separator), secret)
-      && OWNER_PATTERN.test(cookieValue.slice(0, separator))
+      separator > 0 &&
+      verify(
+        cookieValue.slice(separator + 1),
+        cookieValue.slice(0, separator),
+        secret,
+      ) &&
+      OWNER_PATTERN.test(cookieValue.slice(0, separator))
     )
       return { owner: cookieValue.slice(0, separator), mintNew: false };
     return { owner: '', mintNew: false }; // invalid cookie: refuse
@@ -61,14 +65,22 @@ function ownerFor(
   return { owner: `passenger:${randomUUID()}`, mintNew: true };
 }
 
-
 async function forward(request: NextRequest, context: Context) {
   const { path } = await context.params;
   const resource = path.join('/');
   // CONTROLLED verification never via passenger proxy; only direct internal endpoint.
-  if (resource === 'controlled/passenger-reports' || resource.startsWith('controlled/passenger-reports/')) {
+  if (
+    resource === 'controlled/passenger-reports' ||
+    resource.startsWith('controlled/passenger-reports/')
+  ) {
     return NextResponse.json(
-      { error: { code: 'FORBIDDEN', message: 'Controlled operations are not available via passenger proxy.' } },
+      {
+        error: {
+          code: 'FORBIDDEN',
+          message:
+            'Controlled operations are not available via passenger proxy.',
+        },
+      },
       { status: 403 },
     );
   }
@@ -106,11 +118,14 @@ async function forward(request: NextRequest, context: Context) {
         { error: { code: 'FORBIDDEN', message: 'Cross-site request denied.' } },
         { status: 403 },
       );
-    const source = request.headers.get('origin') ?? request.headers.get('referer');
+    const source =
+      request.headers.get('origin') ?? request.headers.get('referer');
     const host = request.headers.get('host');
     if (!source || !host)
       return NextResponse.json(
-        { error: { code: 'FORBIDDEN', message: 'Request origin is required.' } },
+        {
+          error: { code: 'FORBIDDEN', message: 'Request origin is required.' },
+        },
         { status: 403 },
       );
     try {
@@ -118,7 +133,9 @@ async function forward(request: NextRequest, context: Context) {
       const expectedProtocol = secure ? 'https:' : 'http:';
       if (sourceUrl.host !== host || sourceUrl.protocol !== expectedProtocol)
         return NextResponse.json(
-          { error: { code: 'FORBIDDEN', message: 'Cross-site request denied.' } },
+          {
+            error: { code: 'FORBIDDEN', message: 'Cross-site request denied.' },
+          },
           { status: 403 },
         );
     } catch {
@@ -137,17 +154,26 @@ async function forward(request: NextRequest, context: Context) {
   const timeoutMs =
     resource === 'recoveries' && request.method === 'POST' ? 120_000 : 30_000;
   const upstreamHeaders = new Headers();
-  upstreamHeaders.set('accept', isStream ? 'text/event-stream' : 'application/json');
+  upstreamHeaders.set(
+    'accept',
+    isStream ? 'text/event-stream' : 'application/json',
+  );
   const serviceToken = process.env.PASSENGER_SERVICE_TOKEN;
   if (!serviceToken || serviceToken.length < 32)
     return NextResponse.json(
-      { error: { code: 'SERVICE_IDENTITY_UNAVAILABLE', message: 'Passenger service identity is unavailable.' } },
+      {
+        error: {
+          code: 'SERVICE_IDENTITY_UNAVAILABLE',
+          message: 'Passenger service identity is unavailable.',
+        },
+      },
       { status: 503 },
     );
   upstreamHeaders.set('x-passenger-service-token', serviceToken);
   upstreamHeaders.set('x-journey-owner', owner);
   const lastEventId = request.headers.get('last-event-id');
-  if (isStream && lastEventId) upstreamHeaders.set('last-event-id', lastEventId);
+  if (isStream && lastEventId)
+    upstreamHeaders.set('last-event-id', lastEventId);
   const key = request.headers.get('idempotency-key');
   if (key) upstreamHeaders.set('idempotency-key', key);
   let body: string | undefined;
@@ -177,25 +203,29 @@ async function forward(request: NextRequest, context: Context) {
       cache: 'no-store',
       signal: isStream ? request.signal : AbortSignal.timeout(timeoutMs),
     });
-      if (isStream && response.ok && response.body) {
-        const streamed = new NextResponse(response.body, {
-          status: response.status,
-          headers: {
-            'content-type': 'text/event-stream',
-            'cache-control': 'no-cache, no-transform',
-            'x-accel-buffering': 'no',
-          },
-        });
-        if (mintNew)
-          streamed.cookies.set(SESSION_COOKIE, `${owner}.${sign(owner, secret)}`, {
+    if (isStream && response.ok && response.body) {
+      const streamed = new NextResponse(response.body, {
+        status: response.status,
+        headers: {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache, no-transform',
+          'x-accel-buffering': 'no',
+        },
+      });
+      if (mintNew)
+        streamed.cookies.set(
+          SESSION_COOKIE,
+          `${owner}.${sign(owner, secret)}`,
+          {
             httpOnly: true,
             secure,
             sameSite: 'strict',
             path: '/',
             maxAge: SESSION_TTL_SECONDS,
-          });
-        return streamed;
-      }
+          },
+        );
+      return streamed;
+    }
     const responseHeaders = {
       'content-type':
         response.headers.get('content-type') ?? 'application/json',

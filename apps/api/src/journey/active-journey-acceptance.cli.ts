@@ -22,7 +22,9 @@ const snapshotId = '43fb9a29-0c89-5c72-8826-e3dc2adcfb1f';
 function serviceToken(): string {
   const token = process.env.PASSENGER_SERVICE_TOKEN;
   if (!token || token.length < 32)
-    throw new Error('PASSENGER_SERVICE_TOKEN is required for protected passenger routes.');
+    throw new Error(
+      'PASSENGER_SERVICE_TOKEN is required for protected passenger routes.',
+    );
   return token;
 }
 

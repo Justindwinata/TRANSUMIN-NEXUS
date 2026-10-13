@@ -128,7 +128,9 @@ export class ActiveJourneyController {
   ): Promise<Record<string, unknown>> {
     const sequence = Number(legSequence);
     if (!Number.isInteger(sequence) || sequence < 0)
-      throw new BadRequestException('legSequence must be a non-negative integer.');
+      throw new BadRequestException(
+        'legSequence must be a non-negative integer.',
+      );
     if (body.confirmed_at === undefined)
       throw new BadRequestException('confirmed_at is required.');
     const confirmedAt = timestamp(body.confirmed_at, 'confirmed_at');
@@ -158,7 +160,9 @@ export class ActiveJourneyController {
   ): Promise<Record<string, unknown>> {
     const sequence = Number(legSequence);
     if (!Number.isInteger(sequence) || sequence < 0)
-      throw new BadRequestException('legSequence must be a non-negative integer.');
+      throw new BadRequestException(
+        'legSequence must be a non-negative integer.',
+      );
     if (body.confirmed_at === undefined)
       throw new BadRequestException('confirmed_at is required.');
     const confirmedAt = timestamp(body.confirmed_at, 'confirmed_at');
@@ -600,7 +604,14 @@ function mapActiveJourneyError(error: unknown): Error {
 
 function routeId(value: unknown): string | null {
   if (value === undefined || value === null) return null;
-  if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value))
-    throw new BadRequestException('accepted_recovery_id must be a UUID or null.');
+  if (
+    typeof value !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  )
+    throw new BadRequestException(
+      'accepted_recovery_id must be a UUID or null.',
+    );
   return value;
 }

@@ -42,21 +42,27 @@ describe('Tier A child runner is fail-closed', () => {
   });
 
   it('rejects a failing assertion with a nonzero exit', async () => {
-    await assert.rejects(run('runner-negative-assert.spec.ts'), (error: Error) => {
-      assert.match(error.message, /\[exit=1,/);
-      assert.doesNotMatch(error.message, /"success":true/);
-      return true;
-    });
+    await assert.rejects(
+      run('runner-negative-assert.spec.ts'),
+      (error: Error) => {
+        assert.match(error.message, /\[exit=1,/);
+        assert.doesNotMatch(error.message, /"success":true/);
+        return true;
+      },
+    );
   });
 
   it('rejects an after-hook failure even though the child exits 0', async () => {
     // Regression: prior runner trusted stdio + exit code and printed PASS.
-    await assert.rejects(run('runner-negative-hook.spec.ts'), (error: Error) => {
-      assert.match(error.message, /exit=0/);
-      assert.match(error.message, /test-fail-event/);
-      assert.doesNotMatch(error.message, /"status":"PASS"/);
-      return true;
-    });
+    await assert.rejects(
+      run('runner-negative-hook.spec.ts'),
+      (error: Error) => {
+        assert.match(error.message, /exit=0/);
+        assert.match(error.message, /test-fail-event/);
+        assert.doesNotMatch(error.message, /"status":"PASS"/);
+        return true;
+      },
+    );
   });
 
   it('rejects a hang instead of waiting forever', async () => {

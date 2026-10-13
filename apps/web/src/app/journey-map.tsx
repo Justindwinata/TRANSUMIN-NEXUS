@@ -72,7 +72,10 @@ export function JourneyMap({ journey }: Props) {
         },
         layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
       },
-      center: [renderableSegments[0]!.points[0]![0], renderableSegments[0]!.points[0]![1]],
+      center: [
+        renderableSegments[0]!.points[0]![0],
+        renderableSegments[0]!.points[0]![1],
+      ],
       zoom: 10,
     });
     mapRef.current = map;
@@ -100,13 +103,27 @@ export function JourneyMap({ journey }: Props) {
         ),
       );
       map.fitBounds(bounds, { padding: 48, maxZoom: 14, duration: 0 });
-      mapNode.current?.setAttribute('data-fit-bounds', bounds.toArray().flat().join(','));
-      mapNode.current?.setAttribute('data-route-source-count', String(renderableSegments.length));
+      mapNode.current?.setAttribute(
+        'data-fit-bounds',
+        bounds.toArray().flat().join(','),
+      );
+      mapNode.current?.setAttribute(
+        'data-route-source-count',
+        String(renderableSegments.length),
+      );
       mapNode.current?.setAttribute(
         'data-route-point-count',
-        String(renderableSegments.reduce((count, segment) => count + segment.points.length, 0)),
+        String(
+          renderableSegments.reduce(
+            (count, segment) => count + segment.points.length,
+            0,
+          ),
+        ),
       );
-      mapNode.current?.setAttribute('data-marker-count', String(markers.length));
+      mapNode.current?.setAttribute(
+        'data-marker-count',
+        String(markers.length),
+      );
       for (const segment of renderableSegments) {
         const id = `journey-${journey.journey_id}-segment-${segment.sequence}`;
         map.addSource(id, {
@@ -149,7 +166,9 @@ export function JourneyMap({ journey }: Props) {
     };
   }, [journey.journey_id, renderableSegments, markers]);
 
-  const unavailableSegments = segments.filter((segment) => segment.points.length < 2);
+  const unavailableSegments = segments.filter(
+    (segment) => segment.points.length < 2,
+  );
   if (renderableSegments.length === 0)
     return (
       <p className="fine-print">
@@ -184,8 +203,8 @@ export function JourneyMap({ journey }: Props) {
       {unavailableSegments.length > 0 && (
         <p className="fine-print" role="status">
           Partial geometry: {unavailableSegments.length} segment(s) lack valid
-          navigable geometry and are not drawn on the map. The list below remains
-          the source of truth.
+          navigable geometry and are not drawn on the map. The list below
+          remains the source of truth.
         </p>
       )}
       <figcaption id={`${labelId}-caption`}>

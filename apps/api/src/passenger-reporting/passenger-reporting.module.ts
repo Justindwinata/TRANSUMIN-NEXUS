@@ -11,6 +11,10 @@ import { PassengerServiceGuard } from '../journey/interface/passenger-service.gu
 @Module({
   imports: [DatabaseModule, DisruptionModule, JourneyModule],
   controllers: [PassengerReportController],
-  providers: [PassengerReportService, ControlledReviewGuard, PassengerServiceGuard],
+  providers: [
+    PassengerReportService,
+    ControlledReviewGuard,
+    PassengerServiceGuard,
+  ],
 })
 export class PassengerReportingModule {}

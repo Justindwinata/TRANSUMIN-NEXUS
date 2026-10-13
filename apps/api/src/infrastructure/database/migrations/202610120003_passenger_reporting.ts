@@ -35,7 +35,9 @@ export async function up(database: Kysely<unknown>): Promise<void> {
       constraint passenger_report_owner_key_unique unique (owner_ref, idempotency_key)
     )
   `.execute(database);
-  await sql`create index passenger_report_owner_created_idx on report.passenger_report (owner_ref, created_at desc)`.execute(database);
+  await sql`create index passenger_report_owner_created_idx on report.passenger_report (owner_ref, created_at desc)`.execute(
+    database,
+  );
   await sql`
     create function report.enforce_passenger_report_entity_type()
     returns trigger language plpgsql as $function$
@@ -96,12 +98,20 @@ export async function up(database: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(database: Kysely<unknown>): Promise<void> {
-  await sql`drop trigger passenger_report_verification_append_only on report.passenger_report_verification`.execute(database);
-  await sql`drop function report.prevent_passenger_verification_mutation()`.execute(database);
+  await sql`drop trigger passenger_report_verification_append_only on report.passenger_report_verification`.execute(
+    database,
+  );
+  await sql`drop function report.prevent_passenger_verification_mutation()`.execute(
+    database,
+  );
   await sql`drop table report.passenger_report_verification`.execute(database);
   await sql`drop table report.passenger_report_review`.execute(database);
-  await sql`drop trigger passenger_report_exact_entity_type on report.passenger_report`.execute(database);
-  await sql`drop function report.enforce_passenger_report_entity_type()`.execute(database);
+  await sql`drop trigger passenger_report_exact_entity_type on report.passenger_report`.execute(
+    database,
+  );
+  await sql`drop function report.enforce_passenger_report_entity_type()`.execute(
+    database,
+  );
   await sql`drop table report.passenger_report`.execute(database);
   await sql`drop schema report`.execute(database);
 }

@@ -70,13 +70,25 @@ function transitLeg(
   mode: 'MRT_JAKARTA' | 'TRANSJAKARTA',
   entityId: string,
 ): JourneyAlternative['legs'][number] {
-  const start = new Date(Date.parse('2026-10-03T01:00:00.000Z') + sequence * 1_800_000);
+  const start = new Date(
+    Date.parse('2026-10-03T01:00:00.000Z') + sequence * 1_800_000,
+  );
   return {
     sequence,
     mode,
     otpMode: mode === 'MRT_JAKARTA' ? 'SUBWAY' : 'BUS',
-    from: { name: `Stop ${sequence}`, otpStopId: null, latitude: -6.2, longitude: 106.8 },
-    to: { name: `Stop ${sequence + 1}`, otpStopId: null, latitude: -6.21, longitude: 106.81 },
+    from: {
+      name: `Stop ${sequence}`,
+      otpStopId: null,
+      latitude: -6.2,
+      longitude: 106.8,
+    },
+    to: {
+      name: `Stop ${sequence + 1}`,
+      otpStopId: null,
+      latitude: -6.21,
+      longitude: 106.81,
+    },
     intermediateStops: [],
     startAt: start.toISOString(),
     endAt: new Date(start.getTime() + 1_200_000).toISOString(),
@@ -103,13 +115,25 @@ function transitLeg(
 }
 
 function walkingLeg(sequence: number): JourneyAlternative['legs'][number] {
-  const start = new Date(Date.parse('2026-10-03T01:00:00.000Z') + sequence * 1_800_000);
+  const start = new Date(
+    Date.parse('2026-10-03T01:00:00.000Z') + sequence * 1_800_000,
+  );
   return {
     sequence,
     mode: 'WALK',
     otpMode: 'WALK',
-    from: { name: `Stop ${sequence}`, otpStopId: null, latitude: -6.2, longitude: 106.8 },
-    to: { name: `Stop ${sequence + 1}`, otpStopId: null, latitude: -6.205, longitude: 106.805 },
+    from: {
+      name: `Stop ${sequence}`,
+      otpStopId: null,
+      latitude: -6.2,
+      longitude: 106.8,
+    },
+    to: {
+      name: `Stop ${sequence + 1}`,
+      otpStopId: null,
+      latitude: -6.205,
+      longitude: 106.805,
+    },
     intermediateStops: [],
     startAt: start.toISOString(),
     endAt: new Date(start.getTime() + 300_000).toISOString(),
@@ -176,7 +200,9 @@ describe('M4 explicit boarding evidence', () => {
   });
 
   it('enforces boarding-before-alighting and rejects invalid transitions', async () => {
-    const active = await activateWith([transitLeg(0, 'MRT_JAKARTA', mrtEntity)]);
+    const active = await activateWith([
+      transitLeg(0, 'MRT_JAKARTA', mrtEntity),
+    ]);
     assert.equal(active.journeyId, journeyId);
     assert.equal(active.progress.boardingConfirmedLegSequence, null);
 
@@ -189,7 +215,8 @@ describe('M4 explicit boarding evidence', () => {
           confirmedAt: '2026-10-03T01:05:00.000Z',
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'INVALID_BOARDING',
+        error instanceof ActiveJourneyError &&
+        error.code === 'INVALID_BOARDING',
     );
     const boarded = await journeys.confirmBoarding({
       journeyId,
@@ -198,7 +225,10 @@ describe('M4 explicit boarding evidence', () => {
       confirmedAt: '2026-10-03T01:05:00.000Z',
     });
     assert.equal(boarded.progress.boardingConfirmedLegSequence, 0);
-    assert.equal(boarded.progress.boardingConfirmedAt, '2026-10-03T01:05:00.000Z');
+    assert.equal(
+      boarded.progress.boardingConfirmedAt,
+      '2026-10-03T01:05:00.000Z',
+    );
     await assert.rejects(
       () =>
         journeys.confirmBoarding({
@@ -208,7 +238,8 @@ describe('M4 explicit boarding evidence', () => {
           confirmedAt: '2026-10-03T01:06:00.000Z',
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'INVALID_BOARDING',
+        error instanceof ActiveJourneyError &&
+        error.code === 'INVALID_BOARDING',
     );
     await assert.rejects(
       () =>
@@ -219,7 +250,8 @@ describe('M4 explicit boarding evidence', () => {
           confirmedAt: '2026-10-03T01:04:00.000Z',
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'INVALID_BOARDING',
+        error instanceof ActiveJourneyError &&
+        error.code === 'INVALID_BOARDING',
     );
     // Stale progress timestamp is rejected for a leg that has no record yet.
     await assert.rejects(
@@ -231,7 +263,8 @@ describe('M4 explicit boarding evidence', () => {
           confirmedAt: '2026-10-03T01:04:59.000Z',
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'INVALID_PROGRESS',
+        error instanceof ActiveJourneyError &&
+        error.code === 'INVALID_PROGRESS',
     );
     const exited = await journeys.confirmAlighting({
       journeyId,
@@ -240,7 +273,10 @@ describe('M4 explicit boarding evidence', () => {
       confirmedAt: '2026-10-03T01:35:00.000Z',
     });
     assert.equal(exited.progress.alightingConfirmedLegSequence, 0);
-    assert.equal(exited.progress.alightingConfirmedAt, '2026-10-03T01:35:00.000Z');
+    assert.equal(
+      exited.progress.alightingConfirmedAt,
+      '2026-10-03T01:35:00.000Z',
+    );
     assert.equal(exited.progress.revision >= 3, true);
   });
 
@@ -261,7 +297,8 @@ describe('M4 explicit boarding evidence', () => {
           confirmedAt: '2026-10-03T01:05:00.000Z',
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'OWNER_SCOPE_MISMATCH',
+        error instanceof ActiveJourneyError &&
+        error.code === 'OWNER_SCOPE_MISMATCH',
     );
     await assert.rejects(
       () =>
@@ -272,7 +309,8 @@ describe('M4 explicit boarding evidence', () => {
           confirmedAt: '2026-10-03T01:05:00.000Z',
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'INVALID_BOARDING',
+        error instanceof ActiveJourneyError &&
+        error.code === 'INVALID_BOARDING',
     );
   });
 
@@ -298,7 +336,8 @@ describe('M4 explicit boarding evidence', () => {
           confirmedAt: '2026-10-03T01:05:00.000Z',
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'INVALID_BOARDING',
+        error instanceof ActiveJourneyError &&
+        error.code === 'INVALID_BOARDING',
     );
     await journeys.updateProgress({
       journeyId: id,
@@ -357,7 +396,10 @@ describe('M4 explicit boarding evidence', () => {
       confirmedAt: '2026-10-03T01:40:00.000Z',
     });
     // Append-only state events preserve evidence for every confirmed leg.
-    const events = await sql<{ eventType: string; payload: { legSequence: number } }>`
+    const events = await sql<{
+      eventType: string;
+      payload: { legSequence: number };
+    }>`
       select event_type as "eventType", payload_json as payload
       from journey.journey_state_event
       where journey_id=${id}::uuid and event_type in ('BOARDED','ALIGHTED')
@@ -377,7 +419,8 @@ describe('M4 explicit boarding evidence', () => {
           confirmedAt: '2026-10-03T01:45:00.000Z',
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'INVALID_BOARDING',
+        error instanceof ActiveJourneyError &&
+        error.code === 'INVALID_BOARDING',
     );
     const completedJourney = await journeys.updateProgress({
       journeyId: id,
@@ -396,7 +439,8 @@ describe('M4 explicit boarding evidence', () => {
           confirmedAt: '2026-10-03T01:50:00.000Z',
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'JOURNEY_NOT_ACTIVE',
+        error instanceof ActiveJourneyError &&
+        error.code === 'JOURNEY_NOT_ACTIVE',
     );
   });
 
@@ -435,10 +479,19 @@ describe('M4 explicit boarding evidence', () => {
     );
     assert.deepEqual(
       extracted.map((item) => ({
-        id: dependencyId(routingJourneyId, item.legSequence, item.mobilityEntityId),
+        id: dependencyId(
+          routingJourneyId,
+          item.legSequence,
+          item.mobilityEntityId,
+        ),
         owner: item.journeyId,
       })),
-      [{ id: dependencyId(routingJourneyId, 0, mrtEntity), owner: routingJourneyId }],
+      [
+        {
+          id: dependencyId(routingJourneyId, 0, mrtEntity),
+          owner: routingJourneyId,
+        },
+      ],
     );
     assert.equal(
       selectedJourneyFingerprint(
@@ -503,7 +556,8 @@ describe('M4 explicit boarding evidence', () => {
           idempotencyKey: key,
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'ACTIVATION_CONFLICT',
+        error instanceof ActiveJourneyError &&
+        error.code === 'ACTIVATION_CONFLICT',
     );
     // Invalid key format is rejected before any identity work.
     await assert.rejects(
@@ -515,7 +569,8 @@ describe('M4 explicit boarding evidence', () => {
           idempotencyKey: 'short',
         }),
       (error: unknown) =>
-        error instanceof ActiveJourneyError && error.code === 'ACTIVATION_CONFLICT',
+        error instanceof ActiveJourneyError &&
+        error.code === 'ACTIVATION_CONFLICT',
     );
     // Concurrent identical activation replays the winner's instance exactly once.
     const concurrentKey = `k:${randomUUID()}`;

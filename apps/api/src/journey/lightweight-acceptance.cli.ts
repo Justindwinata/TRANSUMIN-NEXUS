@@ -93,12 +93,24 @@ try {
   );
   const dockerIdentifier = execFileSync(
     'docker',
-    ['exec', container, 'psql', '-U', user, '-d', 'postgres', '-Atc',
-      'select system_identifier::text from pg_control_system()'],
+    [
+      'exec',
+      container,
+      'psql',
+      '-U',
+      user,
+      '-d',
+      'postgres',
+      '-Atc',
+      'select system_identifier::text from pg_control_system()',
+    ],
     { encoding: 'utf8' },
   ).trim();
-  assert.equal(systemIdentifier.rows[0]?.system_identifier, dockerIdentifier,
-    'Endpoint differs from authorized product Docker server');
+  assert.equal(
+    systemIdentifier.rows[0]?.system_identifier,
+    dockerIdentifier,
+    'Endpoint differs from authorized product Docker server',
+  );
   const sourceIdentity = await admin.query<{
     current_user: string;
     address: string;
@@ -117,8 +129,11 @@ try {
     'transum-in-nexus-product-postgres-data',
   );
   assert.equal(
-    (await admin.query('select 1 from pg_database where datname = $1', [database]))
-      .rowCount,
+    (
+      await admin.query('select 1 from pg_database where datname = $1', [
+        database,
+      ])
+    ).rowCount,
     0,
   );
   await admin.query(`create database ${quoteIdentifier(database)}`);

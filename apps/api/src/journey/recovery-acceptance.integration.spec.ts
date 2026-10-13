@@ -39,9 +39,9 @@ const ids = {
 const acceptedAt = '2026-10-13T04:00:00.000Z';
 
 before(async () => {
-  const identity = await sql<{ name: string }>`select current_database() as name`.execute(
-    database,
-  );
+  const identity = await sql<{
+    name: string;
+  }>`select current_database() as name`.execute(database);
   assert.match(
     identity.rows[0]?.name ?? '',
     /^tnx_lightweight_[0-9a-f]{32}$/,
@@ -193,7 +193,10 @@ describe('M6 recovery acceptance lineage', () => {
     });
     assert.equal(acceptance.recoveryId, ids.recovery);
     assert.equal(acceptance.acceptedProgressRevision, 2);
-    assert.equal(acceptance.acceptedJourneyFingerprint, ids.proposalFingerprint);
+    assert.equal(
+      acceptance.acceptedJourneyFingerprint,
+      ids.proposalFingerprint,
+    );
 
     const plan = await sql<{ originalPlan: unknown; proposedJourney: unknown }>`
       select p.original_plan_json as "originalPlan",
@@ -202,8 +205,14 @@ describe('M6 recovery acceptance lineage', () => {
       join recovery.recovery_plan r on r.active_journey_id=p.id
       where p.id=${ids.journey}::uuid
     `.execute(database);
-    assert.deepEqual(plan.rows[0]?.originalPlan, journeyJson(ids.originalEntity));
-    assert.deepEqual(plan.rows[0]?.proposedJourney, journeyJson(ids.replacementEntity));
+    assert.deepEqual(
+      plan.rows[0]?.originalPlan,
+      journeyJson(ids.originalEntity),
+    );
+    assert.deepEqual(
+      plan.rows[0]?.proposedJourney,
+      journeyJson(ids.replacementEntity),
+    );
 
     const pointer = await sql<{ acceptedRecoveryId: string; acceptedAt: Date }>`
       select accepted_recovery_id as "acceptedRecoveryId",
@@ -353,13 +362,21 @@ describe('M6 recovery acceptance lineage', () => {
       select count(*)::int as count from twin.mobility_state
       where mobility_entity_id=${ids.blockedEntity}::uuid and operational_state='UNAVAILABLE'
     `.execute(database);
-    assert.equal(blockedState.rows[0]?.count, 1, 'S09 blocked candidate must stay UNAVAILABLE');
+    assert.equal(
+      blockedState.rows[0]?.count,
+      1,
+      'S09 blocked candidate must stay UNAVAILABLE',
+    );
     const persisted = await sql<{ count: number }>`
       select count(*)::int as count from recovery.recovery_acceptance
       where recovery_id=${blockedProposal}::uuid
         and owner_ref=${ids.owner} and idempotency_key='m6-blocked-accept'
     `.execute(database);
-    assert.equal(persisted.rows[0]?.count, 0, 'S09 rejected acceptance must not persist lineage');
+    assert.equal(
+      persisted.rows[0]?.count,
+      0,
+      'S09 rejected acceptance must not persist lineage',
+    );
   });
 
   it('rejects acceptance when the triggering impact has resolved', async () => {
@@ -407,10 +424,12 @@ describe('M6 recovery acceptance lineage', () => {
       { code: 'RECOVERY_STALE' },
     );
     assert.equal(
-      (await sql<{ count: number }>`
+      (
+        await sql<{ count: number }>`
         select count(*)::int as count from recovery.recovery_acceptance
         where recovery_id=${ids.resolvedRecovery}::uuid
-      `.execute(database)).rows[0]?.count,
+      `.execute(database)
+      ).rows[0]?.count,
       0,
     );
   });

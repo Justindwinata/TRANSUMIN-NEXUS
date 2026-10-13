@@ -43,7 +43,10 @@ export class ActiveJourneyService {
       );
     const journeyId = input.idempotencyKey
       ? randomUUID()
-      : activeJourneyInstanceId(input.ownerRef, input.selectedJourney.journeyId);
+      : activeJourneyInstanceId(
+          input.ownerRef,
+          input.selectedJourney.journeyId,
+        );
     return this.repository.activate({
       journeyId,
       ownerRef: input.ownerRef,
@@ -52,7 +55,9 @@ export class ActiveJourneyService {
       ...(input.idempotencyKey
         ? {
             idempotencyKey: input.idempotencyKey,
-            requestFingerprint: productActivationFingerprint(input.selectedJourney),
+            requestFingerprint: productActivationFingerprint(
+              input.selectedJourney,
+            ),
           }
         : {}),
       dependencies: extractJourneyDependencies(input.selectedJourney).map(
@@ -169,7 +174,11 @@ export function productActivationFingerprint(
   void _unusedPlannedAt;
   return createHash('sha256')
     .update('product-activation-v1:')
-    .update(JSON.stringify(canonicalValue({ ...journey, routingContext: stableContext })))
+    .update(
+      JSON.stringify(
+        canonicalValue({ ...journey, routingContext: stableContext }),
+      ),
+    )
     .digest('hex');
 }
 

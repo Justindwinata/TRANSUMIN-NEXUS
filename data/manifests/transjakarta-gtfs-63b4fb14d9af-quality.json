@@ -155,9 +155,7 @@
     "nonBrtOrFeeder": {
       "status": "EVIDENCED",
       "routes": 63,
-      "evidenceValues": [
-        "Angkutan Umum Integrasi"
-      ]
+      "evidenceValues": ["Angkutan Umum Integrasi"]
     },
     "mikrotrans": {
       "status": "EVIDENCED",
