@@ -1,6 +1,6 @@
 # Product V1 delivery board
 
-Updated: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. Tested code SHA: `c921fb895154c712de0dbd52c526b6741187e1db` (pushed, local = remote `prototype-v1`, 376 tracked files, PRIVATE); source package SHA-256 `1f117c315da05b6d47f570172bc6c0d90056e86b04ae2626757db62c352512c2`. Preflight R5–R6 tested G5 SHA: `31772e2`; preflight docs SHA: `b46de42` (docs-only). Final report metadata will follow as `02654ad1a6490af88652d09c0645fed38fd055e0` (commit, same code). Hardware GPS, browser two-recovery, browser expired-session active-journey, and S09 remain `NOT_VERIFIED`.
+Updated: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. Tested code SHA: `c921fb895154c712de0dbd52c526b6741187e1db`; source package SHA-256 `1f117c315da05b6d47f570172bc6c0d90056e86b04ae2626757db62c352512c2` (same code). All later commits are documentation-only; the running HEAD is the final release SHA verified equal to the remote in the delivery message. Preflight R5–R6 tested G5 SHA: `31772e2`; preflight docs SHA: `b46de42` (docs-only). Hardware GPS, browser two-recovery, browser expired-session active-journey, and S09 remain `NOT_VERIFIED`.
 
 ## R6 realization checkpoint (2026-10-14)
 
