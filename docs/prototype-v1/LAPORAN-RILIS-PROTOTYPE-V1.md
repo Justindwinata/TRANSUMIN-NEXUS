@@ -5,11 +5,22 @@ Tanggal: 2026-10-14. Klasifikasi: `PROTOTYPE_V1_PARTIAL`. Semua status memakai n
 ## Ringkasan
 
 - Branch: `prototype-v1` (PRIVATE) di `https://github.com/Justindwinata/TRANSUMIN-NEXUS.git`.
-- HEAD lokal = remote: `31772e2ddc0ba7815e20a4bc9babab56cd14c922`.
+- SHA kode checkpoint G5: `31772e2ddc0ba7815e20a4bc9babab56cd14c922`; bukan SHA rilis dokumentasi.
+- SHA rilis dokumentasi R5, lokal = remote saat preflight R6: `b46de42306960d8b6876243833089f6eb3b67d7a`. Commit ini hanya mengubah empat dokumen, tanpa kode executable. Hasil uji sebelumnya tidak diklaim dijalankan pada SHA ini.
+- SHA rilis final R6: `NOT_VERIFIED` sampai commit, push, dan verifikasi remote selesai.
 - Commit checkpoint ini: `06fa181` (G1 lineage/guard), `a40c19b` (pengerasan G1/G2 + bukti F-03), `31772e2` (G4 LEVEL 1 + rerun terintegrasi G5).
 - Pohon kerja bersih setelah push. Tanpa force-push, tanpa tulis ulang riwayat, tanpa penghapusan destruktif.
 - Runtime uji: API `127.0.0.1:3001`, proxy web `127.0.0.1:3000`, OTP `2.10.0` `127.0.0.1:8080`, snapshot `43fb9a29-0c89-5c72-8826-e3dc2adcfb1f`, tanggal layanan `2026-10-02`, zona `Asia/Jakarta`.
 - Database produk `127.0.0.1:5435/transum_in_nexus_product` tidak diubah oleh harness isolasi; setiap DB scratch milik invokasi dihapus dengan `DROP_SUCCESS`.
+
+## R6 verification delta
+
+- Runtime aktual di-boot ulang: API health `ready`, DB/PostGIS `up`, web `200`, OTP `2.10.0` sehat. Walkthrough Playwright segar 20/20 (`.release-evidence/r6-walkthrough.log`), pada snapshot yang tercatat, dengan review terkendali `SIMULATED`; hasil tidak mengklaim fisik/realtime.
+- Console desktop kosong, request awal berhasil; smoke layar 390×844: `horizontalOverflow=false`, tanpa console error/warning atau request gagal. Active Journey seluler belum diverifikasi visual penuh.
+- Regresi final: `pnpm check` exit 0 (API 109/109, web 45/45, lint/typecheck, 11 kontrak, OpenAPI/types, format, API/web build); `pnpm security:scan` PASS; integrasi 9 suite / 31 tes PASS; multi-OD 11 koridor PASS. F01/F02/F04, empat preferensi G2, GPS software, M5 22/22, M6 13/13 (setelah parser harness disesuaikan format cookie), M7 20/20, G4 handoff LEVEL1 PASS. CP2 PASS; CP3 final rerun PASS dengan scratch `DROP_SUCCESS`. Rerun CP3 sebelumnya gagal `500` pada aktivasi konteks kedua; DB scratch milik invokasi tetap retained, akar sebab `NOT_VERIFIED`.
+- Tambahan G1: malformed/missing walk step → skematik tanpa turn/progres GPS parsial; perubahan struktur leg memakai suffix aktif; respons R1 stale tidak menimpa R2. Tier A memperketat lineage R1/R2/R3 dan PASS 12/12. Browser dua-recovery dan expired-session Active Journey tetap `NOT_VERIFIED`.
+- Paket source dibatasi ke tracked allowlist, tidak berisi `.env`, cache, dataset, screenshot/log atau runtime. ZIP/checksum saat ini lokal dan belum merepresentasikan SHA setelah perubahan working tree; harus dibuat ulang dari commit final.
+- Panduan demo: `docs/delivery/R6-MANUAL-ACCEPTANCE-GUIDE.md`. Prosedur GPS fisik: `docs/delivery/PHYSICAL-GPS-USER-TEST-WORKFLOW.md`. Keputusan A–E + perbandingan provider: `docs/delivery/R6-PRODUCT-OWNER-DECISIONS.md`, `docs/delivery/R6-GEOCODER-COMPARISON.md`.
 
 ## Status per gate
 

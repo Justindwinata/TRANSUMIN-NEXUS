@@ -99,14 +99,16 @@ function ownerFromCookie() {
   return cookie.then((entry) => {
     if (!entry?.value) return null;
     const raw = decodeURIComponent(entry.value);
-    const dot = raw.lastIndexOf('.');
-    if (dot <= 0) return null;
-    const value = raw.slice(0, dot);
-    if (!sessionSecret) return value;
+    const parts = raw.split('.');
+    if (parts.length !== 3) return null;
+    const [owner, expiry, signature] = parts;
+    if (!/^passenger:[0-9a-f-]{36}$/.test(owner) || !/^\d+$/.test(expiry))
+      return null;
+    if (!sessionSecret) return owner;
     const expected = createHmac('sha256', sessionSecret)
-      .update(value)
+      .update(`${owner}.${expiry}`)
       .digest('base64url');
-    return expected === raw.slice(dot + 1) ? value : null;
+    return expected === signature ? owner : null;
   });
 }
 function incidentType(type) {

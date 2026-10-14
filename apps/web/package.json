@@ -7,7 +7,7 @@
     "dev": "next dev --port 3000",
     "build": "next build",
     "start": "next start --port 3000",
-    "test": "node --experimental-strip-types --test src/lib/passenger.test.mjs src/lib/map-geometry.test.mjs src/lib/navigation.test.mjs src/lib/walk-navigation-cp2.test.mjs",
+    "test": "node --experimental-strip-types --test src/lib/passenger.test.mjs src/lib/map-geometry.test.mjs src/lib/navigation.test.mjs src/lib/walk-navigation-cp2.test.mjs src/lib/g1-recovery-guards.test.mjs",
     "test:e2e": "node scripts/passenger-smoke.mjs",
     "test:browser:e2e": "node scripts/passenger-browser-acceptance.mjs",
     "test:browser:map": "node scripts/journey-map-browser-acceptance.mjs",

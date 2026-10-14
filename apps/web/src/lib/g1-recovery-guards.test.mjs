@@ -67,3 +67,36 @@ test('G1-A reconcile distinguishes applied, safe retry, and unreadable state', (
     'UNKNOWN',
   );
 });
+
+test('R6-C stale responses must not overwrite a generation-changing recovery', () => {
+  const applied = { accepted_recovery_id: 'r2', accepted_before_leg_count: 1 };
+  assert.equal(
+    acceptanceReconcileOutcome({ journey: applied, recoveryId: 'r2' }),
+    'APPLIED',
+  );
+  assert.equal(
+    acceptanceReconcileOutcome({ journey: applied, recoveryId: 'r1' }),
+    'NOT_APPLIED',
+  );
+  const capture = recoverySource({
+    journey_id: 'j1',
+    accepted_recovery_id: 'r1',
+    progress: { revision: 2 },
+  });
+  const live = recoverySource({
+    journey_id: 'j1',
+    accepted_recovery_id: 'r2',
+    progress: { revision: 2 },
+  });
+  assert.equal(
+    canCommitRecovery({
+      requestId: 2,
+      latestRequestId: 2,
+      generation: 1,
+      latestGeneration: 1,
+      captured: capture,
+      latest: live,
+    }),
+    false,
+  );
+});

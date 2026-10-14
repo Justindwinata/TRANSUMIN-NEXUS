@@ -850,12 +850,16 @@ describe('M6 recovery acceptance lineage', () => {
       winner.recoveryId,
       revisionAfter,
     );
+    const latestJourney = {
+      ...journeyJson(ids.replacementEntity)!,
+      journeyId: postProgress,
+    };
     const finalAcceptance = await repository.accept({
       recoveryId: postProgress,
       ownerRef: ids.owner,
       idempotencyKey: 'g1-post-progress-accept',
       progressRevision: revisionAfter,
-      acceptedJourney: journeyJson(ids.replacementEntity),
+      acceptedJourney: latestJourney,
       acceptedJourneyFingerprint: ids.proposalFingerprint,
       acceptedAt,
     });
@@ -894,13 +898,19 @@ describe('M6 recovery acceptance lineage', () => {
       predecessor: string | null;
       revision: number;
       originalPlan: unknown;
+      acceptedJourney: unknown;
+      currentItinerary: unknown;
       currentFirstLeg: unknown;
+      latestRecoveryId: string;
     }>`
       select ra.recovery_id as "recoveryId",
         ra.acceptance_json->>'predecessorRecoveryId' as predecessor,
         pr.revision,
         p.original_plan_json as "originalPlan",
-        a.current_itinerary_json->'legs'->0 as "currentFirstLeg"
+        ra.accepted_journey_json as "acceptedJourney",
+        a.current_itinerary_json as "currentItinerary",
+        a.current_itinerary_json->'legs'->0 as "currentFirstLeg",
+        a.accepted_recovery_id as "latestRecoveryId"
       from recovery.recovery_acceptance ra
       join journey.active_journey a on a.journey_id=ra.active_journey_id
       join journey.journey_progress pr on pr.journey_id=a.journey_id
@@ -932,6 +942,29 @@ describe('M6 recovery acceptance lineage', () => {
       journeyJson(ids.originalEntity)!.legs[0],
       'materialization retains original completed history across generations',
     );
+    assert.equal(durable.rows.length, chain.length);
+    for (const row of durable.rows) {
+      assert.equal(row.latestRecoveryId, postProgress);
+      assert.deepEqual(row.originalPlan, journeyJson(ids.originalEntity));
+      assert.deepEqual(
+        row.acceptedJourney,
+        row.recoveryId === postProgress
+          ? latestJourney
+          : journeyJson(ids.replacementEntity),
+        'earlier acceptance payloads remain immutable',
+      );
+      assert.deepEqual(
+        row.currentItinerary,
+        {
+          ...latestJourney,
+          legs: [
+            journeyJson(ids.originalEntity)!.legs[0],
+            { ...latestJourney.legs[0], sequence: 1 },
+          ],
+        },
+        'latest itinerary contains exactly completed history plus rebased suffix',
+      );
+    }
 
     assert.deepEqual(
       originalLegRows.rows.map(

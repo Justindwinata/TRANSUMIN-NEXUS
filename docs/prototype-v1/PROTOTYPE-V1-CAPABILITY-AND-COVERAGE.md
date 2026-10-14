@@ -130,6 +130,14 @@ pnpm check
 PRODUCT_ACCEPTANCE_DIST_DIR=.next-r1 pnpm security:scan
 ```
 
+## R6 verification delta
+
+Classification remains `PROTOTYPE_V1_PARTIAL`. Actual app restarted with API/DB/PostGIS, frontend and OTP ready on approved endpoints. New exact R1 workflow 20/20; M5 22/22, M6 corrected-cookie harness 13/13, M7 20/20; real OTP multi-OD 11 corridors; four-preference G2 proof; GPS software, F01/F02 pin/stream, F04, G4 LEVEL 1 all executed. Isolated CP2 and final CP3 rerun exit 0 with `DROP_SUCCESS`. One preceding CP3 activation returned 500; failed invocation scratch retained and root cause `NOT_VERIFIED`, not hidden by rerun.
+
+Added pure coverage for null/missing/invalid walking steps, schematic recovery suffix after changed leg count, stale generation response. Added DB assertions for immutable original plan, per-generation payload, completed history and latest sequential itinerary: Tier A 12/12. Web 45/45 and API 109/109; standard integration 9 suites / 31 tests; final `pnpm check` exit 0. Initial mobile 390×844 no overflow/errors/failed requests; mobile Active Journey visual walkthrough remains `NOT_VERIFIED`.
+
+No feature code replaced. Physical GPS, browser R2, browser expired-session Active Journey, live OTP NO_PATH and application NO_VALID_ALTERNATIVE remain `NOT_VERIFIED`. Geocoding/POI/pedestrian/provider/Tier B blockers unchanged. Decision comparison and manual demo instructions: `docs/delivery/R6-PRODUCT-OWNER-DECISIONS.md` and `docs/delivery/R6-MANUAL-ACCEPTANCE-GUIDE.md`.
+
 ## Current blockers and exact data decisions
 
 | ID                         | Status          | Decision required before upgrade                                                                                                                                                                                                                                                                   |

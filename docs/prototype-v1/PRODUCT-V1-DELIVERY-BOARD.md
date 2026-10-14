@@ -1,6 +1,19 @@
 # Product V1 delivery board
 
-Updated: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. G0–G5 checkpoint all committed and pushed on branch `prototype-v1` (HEAD `31772e2ddc0ba7815e20a4bc9babab56cd14c922`); full G1 edge-case matrix and hardware GPS remain `NOT_VERIFIED`.
+Updated: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. Tested G5 code SHA: `31772e2ddc0ba7815e20a4bc9babab56cd14c922`; R5 documentation SHA: `b46de42306960d8b6876243833089f6eb3b67d7a` (documentation-only). Final R6 release SHA remains `NOT_VERIFIED` until commit/push/remote verification. Hardware GPS, browser two-recovery, and S09 remain `NOT_VERIFIED`.
+
+## R6 realization checkpoint (2026-10-14)
+
+- Fresh supported startup: `pnpm dev`; API readiness `ready`, DB/PostGIS up, web 200; `pnpm otp:start` reused existing graph and `otp:health` returned GraphQL QueryType. Initial short shell timeouts stopped otherwise-ready processes; these are harness lifecycle failures, not application acceptance failures.
+- New R1 walkthrough: 20/20, exit 0 (`.release-evidence/r6-walkthrough.log`), exact snapshot/date, report/review/recovery/continued completion/reload. Desktop initial console: zero errors; network responses 200/101. Mobile 390×844 initial page: zero console warnings/errors or failed requests; no horizontal overflow (`R6/mobile/mobile-smoke.json`). Mobile active-journey visual coverage remains `NOT_VERIFIED`.
+- R6 G1 additions: missing/null/empty/malformed steps fail to schematic without partial turns/GPS advancement; changed suffix leg structure uses new destination guidance; stale R1 response cannot commit into R2. Standard web tests now include recovery guards: 45/45. Tier A 12/12, exit 0, enhanced sequential R1/R2/R3 immutable payload/original/completed-history/latest-itinerary assertions (`r6-tier-a.log`). No new migration.
+- Standard integration 9 suites / 31 tests, exit 0 (`r6-integration.log`); real OTP multi-OD 11 corridors exit 0 (`r6-multi-od.log`). Initial multi-OD missing env invocation failed, corrected by supported root `.env` sourcing; no assertion weakened.
+- Serial browser regressions: F01/F02 pin/GPS-stream PASS; G2 all four preferences PASS (3 candidates / 2 winners); GPS software PASS; F04 PASS; M5 22/22; M7 20/20; handoff LEVEL 1 PASS. M6 initial FAIL: test cookie parser obsolete after signed expiry format; fixed harness only, rerun 13/13 exit 0 (`R6/recovery-m6-fixed.log`).
+- Isolated CP2 exit 0 with `DROP_SUCCESS`. CP3 one R6 repeat failed with HTTP 500 at second-context activation; scratch `tnx_cp2_ad05ec51619f49c2a382716768d7babd` retained fail-closed. Separate rerun exit 0, exact map/timeline/navigation parity, 3→4 legs, lost-response reconcile, completed WALK immutable, completion reload; scratch `tnx_cp2_e752c7be6e5e4c7c884ca6afec11c977` `DROP_SUCCESS` (`R6/cp3-recovery-rerun.log`). HTTP 500 root cause remains `NOT_VERIFIED`; failed evidence not erased.
+- `pnpm check` final exit 0 (`r6-check-final.log`): API 109/109, web 45/45, lint/typecheck/contracts/OpenAPI/types/format/API+web builds. `pnpm security:scan` exit 0 (`r6-security-scan.log`), 13 client inputs; ignored private dev-cache matches never packaged.
+- Guides/decisions: `docs/delivery/R6-MANUAL-ACCEPTANCE-GUIDE.md`, `PHYSICAL-GPS-USER-TEST-WORKFLOW.md`, `R6-PRODUCT-OWNER-DECISIONS.md`, `R6-GEOCODER-COMPARISON.md`. Physical GPS and independent pedestrian validation not claimed.
+- Remaining: browser R2 and expired-session Active Journey path `NOT_VERIFIED`; S09 live engine `NO_PATH` / application `NO_VALID_ALTERNATIVE` `NOT_VERIFIED`. No fabricated alternative or forced refusal. Existing negative unit/domain paths do not prove live OTP negative routing.
+- No application source behavior changed in R6; tests, harness compatibility, docs, and source-packaging tooling changed. R6 executed against `b46de42` plus working-tree delta; packaged SHA will be recorded outside the archive after commit to avoid self-referential claims.
 
 ## R5 G0–G5 final checkpoint (2026-10-14)
 

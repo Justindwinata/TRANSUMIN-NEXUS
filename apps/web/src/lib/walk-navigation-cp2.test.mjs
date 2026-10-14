@@ -330,6 +330,10 @@ describe('CP2 walking_steps navigation', () => {
       'SCHEMATIC_GEOMETRY',
     );
     assert.equal(
+      prepareWalkNavigation({ ...base, walking_steps: null }).evidence,
+      'SCHEMATIC_GEOMETRY',
+    );
+    assert.equal(
       prepareWalkNavigation({
         ...base,
         walking_steps: [
@@ -402,6 +406,86 @@ describe('CP2 walking_steps navigation', () => {
     );
     assert.equal(reacquired.status, 'ACQUIRING');
     assert.equal(reacquired.maneuverIndex, 0);
+  });
+
+  it('R6-C rejects whole invalid series without partial turns or GPS advancement', () => {
+    // SAMPLE: valid first step must not survive invalid second step.
+    for (const walking_steps of [
+      undefined,
+      [],
+      [
+        base.walking_steps[0],
+        { ...base.walking_steps[1], distance_meters: -1 },
+      ],
+      [base.walking_steps[0], { ...base.walking_steps[1], longitude: 181 }],
+      [
+        base.walking_steps[0],
+        { ...base.walking_steps[1], relative_direction: 'UNKNOWN' },
+      ],
+    ]) {
+      const segment = { ...base, walking_steps };
+      const navigation = prepareWalkNavigation(segment);
+      assert.equal(navigation.evidence, 'SCHEMATIC_GEOMETRY');
+      assert.deepEqual(navigation.maneuvers, []);
+      assert.ok(navigation.reason);
+      const progress = updateWalkProgress(
+        navigation,
+        initialWalkProgress(),
+        fix(106.8106, 1000),
+        2000,
+      );
+      assert.equal(progress.status, 'UNCERTAIN');
+      assert.equal(progress.maneuverIndex, 0);
+      assert.equal(progress.alongMeters, null);
+      const guidance = nextGuidance(
+        [segment],
+        0,
+        { boarded: false, alighted: false },
+        progress,
+      );
+      assert.equal(guidance.provenance, 'SCHEMATIC_GEOMETRY');
+      assert.equal(guidance.nextInstruction, null);
+      assert.equal(guidance.nextDistanceMeters, null);
+      assert.equal(guidance.remainingMeters, null);
+      assert.doesNotMatch(guidance.title, /Belok| ke A| ke B/i);
+    }
+  });
+
+  it('R6-C changed recovery leg structure uses active schematic suffix, not old turns', () => {
+    // SAMPLE: completed transit plus old transfer WALK; repair removes later transit.
+    const completed = { ...base, mode: 'TRANSJAKARTA' };
+    const oldWalk = { ...base, sequence: 1 };
+    const original = [completed, oldWalk, { ...completed, sequence: 2 }];
+    const repaired = {
+      ...oldWalk,
+      to: { ...base.to, name: 'Tujuan pengganti' },
+      walking_steps: [],
+    };
+    const recovered = [completed, repaired];
+    const boarding = { boarded: false, alighted: false };
+    assert.equal(nextGuidance(original, 1, boarding).mode, 'WALK_TRANSFER');
+    assert.equal(
+      nextGuidance(original, 1, boarding).provenance,
+      'OTP_DERIVED_MANEUVER',
+    );
+    assert.notEqual(
+      navigationScopeKey('j1', 'r1', oldWalk),
+      navigationScopeKey('j1', 'r2', repaired),
+    );
+    const guidance = nextGuidance(
+      recovered,
+      1,
+      boarding,
+      initialWalkProgress(),
+    );
+    assert.equal(guidance.mode, 'WALK_TO_DESTINATION');
+    assert.equal(guidance.destination, 'Tujuan pengganti');
+    assert.equal(guidance.provenance, 'SCHEMATIC_GEOMETRY');
+    assert.equal(guidance.nextInstruction, null);
+    assert.equal(guidance.nextDistanceMeters, null);
+    assert.equal(guidance.remainingMeters, null);
+    assert.match(guidance.detail, /skematik/);
+    assert.equal(nextGuidance(recovered, 2, boarding).mode, 'ARRIVED');
   });
 
   it('scope changes on accepted recovery and geometry identity, without GPS storage', () => {
