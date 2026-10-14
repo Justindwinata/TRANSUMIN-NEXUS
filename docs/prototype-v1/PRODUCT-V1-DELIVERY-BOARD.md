@@ -1,6 +1,6 @@
 # Product V1 delivery board
 
-Updated: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. CP2 source changes verified locally; publication pending commit/push.
+Updated: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. G1 browser subset verified locally; full G1 edge-case matrix remains `NOT_VERIFIED`; publication pending commit/push.
 
 ## Provenance
 
@@ -20,6 +20,17 @@ Repository is sanitized product-publication lineage, not original research Git h
 - CP2 recovery-to-navigation browser continuity and final full R5 acceptance: `NOT_VERIFIED`; CP3–CP6 not closed. Hardware GPS `NOT_VERIFIED`; independent pedestrian validation `BLOCKED_BY_DATA`.
 - Earlier CP2 browser runs against persistent product runtime are **not accepted isolation evidence**. Test journey state was created; no cleanup/reset of product data was performed. Corrected scratch run supersedes those runs for navigation browser evidence.
 - No production readiness claim. See `docs/delivery/CP2-WALKING-NAVIGATION.md` for scope and reproduction.
+
+## R5 G0–G1 checkpoint
+
+- G0 closure retained: rotated local credentials, DB CLI env resolver plus live identity check (`pnpm db:status` verifies `127.0.0.1:5435/transum_in_nexus_product`), full source `pnpm check` exit 0, source-only `pnpm security:scan` PASS.
+- Runtime startup fix: root `pnpm dev`/`dev:web`/`dev:api` now load ignored root `.env` via `scripts/dev/with-env.mjs`; previously `tsx watch`/`next dev` used no root env, so the API defaulted to `127.0.0.1:5433` (place search 500) and the passenger proxy returned 503 `OWNER_IDENTITY_UNAVAILABLE`. Verified after fix: `transit/places` 200 direct and 200 through the web proxy.
+- G1 recovery-to-navigation browser subset: `PASS` — `pnpm data:cp3:recovery`, exit 0, `.release-evidence/G1/main-cp3-recovery-navigation-final.log`. Real OTP plan, `SIMULATED` geolocation stub, controlled review API, invocation-owned thin canonical scratch. Asserted: real WALK leg progress persisted (`completed_segment_count=1`, first segment `WALK`), report `REPORTED_UNVERIFIED` → `CONTROLLED_VERIFIED` (`SIMULATED`), targeted alert with unrelated-owner isolation and foreign-owner recovery `404`, accepted recovery lineage with original plan preserved, completed WALK history unchanged, new navigation scope, stale instruction absent, maneuver index reset (`-1`), refresh persistence, completion and completion-after-reload. Scratch `DROP_SUCCESS`.
+- Full G1: `NOT_VERIFIED`. Deliberate edge-case matrix not yet executed: transit-completed recovery, schematic-only recovery fallback, late/superseded routing response, concurrent acceptance, expired/invalid session after rotation, map/timeline/navigation triple-agreement assertion, different remaining-leg structure, malformed/missing `walking_steps`.
+- Failed scratch DB `tnx_cp2_9b5a3d7a58d848aa8c5fade5fea16668` retained fail-closed (assertion failure before cleanup); earlier failed-run scratch DBs also retained and never auto-dropped.
+- G2 preference correctness: real OTP multi-OD `pnpm acceptance:v1:multi-od` exit 0 across 11 corridors (`.release-evidence/G2/real-otp-multi-od.log`); BALANCED order matched the declared 0.5/0.3/0.2 normalized formula on two real trade-off OD pairs; web unit 40/40. Hardware GPS `NOT_VERIFIED` with field checklist `docs/delivery/GPS-DEVICE-FIELD-CHECK.md`.
+- G3 typed address search: `BLOCKED_BY_AUTHORIZATION`; decision request `docs/delivery/G3-GEOCODING-AUTHORIZATION-REQUEST.md`. No public Nominatim autocomplete, no fabricated results; pin/coordinate/stop/current-location fallback remains usable.
+- Security scan note: `pnpm security:scan` (`.release-evidence/manual-v1/g1-security-scan.log`) exit 0, 366 tracked, 13 client; ignored Turbopack dev cache `.next/dev/cache/**` currently holds `CONTROLLED_REVIEW_TOKEN` and `POSTGRES_PASSWORD` categories and must never be published or uploaded.
 
 ## Historical R3 milestone
 

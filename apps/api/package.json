@@ -42,6 +42,7 @@
     "data:lightweight-acceptance": "tsx src/journey/lightweight-acceptance.cli.ts",
     "data:product-p1r:serve": "tsx src/journey/product-p1r-browser.cli.ts",
     "data:cp2:isolated-browser": "tsx src/journey/cp2-isolated-browser.cli.ts",
+    "data:cp3:recovery": "tsx src/journey/cp2-isolated-browser.cli.ts --recovery",
     "data:demo:seed": "tsx src/journey/demo-database-lifecycle.cli.ts seed",
     "demo:present": "tsx src/journey/demo-database-lifecycle.cli.ts present",
     "test:demo": "tsx src/journey/demo-database-lifecycle.cli.ts run",

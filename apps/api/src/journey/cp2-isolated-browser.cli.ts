@@ -17,9 +17,13 @@ const SPATIAL_VERSION = 'e6aa5be0-0cf4-5e33-8581-696af9a2045f';
 const RAIL_VERSION = '19dde3d7-a359-5457-bea5-a6db1704543d';
 
 type Identity = { name: string; oid: number; owner: string; marker: string };
+const recoverySuite = process.argv.includes('--recovery');
 const id = randomUUID();
 const database = `tnx_cp2_${id.replaceAll('-', '')}`;
 const marker = `tnx_cp2:${id}`;
+const browserScript = recoverySuite
+  ? 'apps/web/scripts/passenger-cp3-recovery-navigation-acceptance.mjs'
+  : 'apps/web/scripts/passenger-cp2-walk-navigation-acceptance.mjs';
 
 function q(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
@@ -306,6 +310,14 @@ async function main() {
       PRODUCT_P1R_PORT: '3303',
       API_PORT: '3303',
       PASSENGER_API_BASE_URL: 'http://127.0.0.1:3303/api/v1',
+      PASSENGER_SESSION_SECRET: 'test-session-secret-0123456789abcdef',
+      CONTROLLED_REVIEW_ENABLED: 'true',
+      CONTROLLED_REVIEW_TOKEN:
+        typeof env.CONTROLLED_REVIEW_TOKEN === 'string' &&
+        env.CONTROLLED_REVIEW_TOKEN.length >= 32
+          ? env.CONTROLLED_REVIEW_TOKEN
+          : 'test-controlled-reviewer-0123456789abcdef',
+      NEXT_TELEMETRY_DISABLED: '1',
       PASSENGER_API_URL: 'http://127.0.0.1:3303/api/v1',
       PASSENGER_NETWORK_SNAPSHOT_ID: SNAPSHOT,
       PASSENGER_WEB_URL: 'http://127.0.0.1:3302',
@@ -391,41 +403,43 @@ async function main() {
     );
     await wait('http://127.0.0.1:3302', web);
     const browserEnv = { ...childEnv, CP2_API_PID: String(api.pid) };
-    const cp2 = spawn(
-      process.execPath,
-      ['apps/web/scripts/passenger-cp2-walk-navigation-acceptance.mjs'],
-      {
-        cwd: ROOT,
-        env: browserEnv,
-        stdio: 'inherit',
-      },
-    );
+    const cp2 = spawn(process.execPath, [browserScript], {
+      cwd: ROOT,
+      env: browserEnv,
+      stdio: 'inherit',
+    });
     cp2.stdout?.pipe(process.stdout);
     cp2.stderr?.pipe(process.stderr);
     const cp2Code = await new Promise<number | null>((resolve, reject) => {
       cp2.once('error', reject);
       cp2.once('close', resolve);
     });
-    assert.equal(cp2Code, 0, 'CP2 browser proof failed');
-    const r4 = spawn(
-      process.execPath,
-      ['apps/web/scripts/passenger-r4-f04-acceptance.mjs'],
-      {
-        cwd: ROOT,
-        env: browserEnv,
-        stdio: 'inherit',
-      },
+    assert.equal(
+      cp2Code,
+      0,
+      recoverySuite ? 'CP3 browser proof failed' : 'CP2 browser proof failed',
     );
-    const r4Code = await new Promise<number | null>((resolve, reject) => {
-      r4.once('error', reject);
-      r4.once('close', resolve);
-    });
-    assert.equal(r4Code, 0, 'R4 browser proof failed');
+    if (!recoverySuite) {
+      const r4 = spawn(
+        process.execPath,
+        ['apps/web/scripts/passenger-r4-f04-acceptance.mjs'],
+        {
+          cwd: ROOT,
+          env: browserEnv,
+          stdio: 'inherit',
+        },
+      );
+      const r4Code = await new Promise<number | null>((resolve, reject) => {
+        r4.once('error', reject);
+        r4.once('close', resolve);
+      });
+      assert.equal(r4Code, 0, 'R4 browser proof failed');
+    }
     passed = true;
     console.log(
       JSON.stringify({
         status: 'PASS',
-        tier: 'CP2_ISOLATED_SUBSET',
+        tier: recoverySuite ? 'CP3_RECOVERY_NAVIGATION' : 'CP2_ISOLATED_SUBSET',
         database,
         marker,
         oid: scratch.oid,
