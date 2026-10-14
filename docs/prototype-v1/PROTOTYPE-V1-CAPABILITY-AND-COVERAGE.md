@@ -1,6 +1,15 @@
 # Prototype V1 — capability and coverage checkpoint
 
-Date: 2026-10-13. Classification: `PROTOTYPE_V1_PARTIAL`. R3 executed exact V20/S14 browser evidence and S09 negative-scenario attempt; R2 results remain valid because application runtime source is unchanged. This checkpoint records executed evidence only. Status values are exact: `PASS`, `FAIL`, `BLOCKED_BY_DATA`, `BLOCKED_BY_AUTHORIZATION`, `BLOCKED_BY_ENVIRONMENT`, `NOT_RUN`, `NOT_VERIFIED`.
+Date: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. R3 executed exact V20/S14 browser evidence and S09 negative-scenario attempt; R2 results remain valid because application runtime source is unchanged. This checkpoint records executed evidence only. Status values are exact: `PASS`, `FAIL`, `BLOCKED_BY_DATA`, `BLOCKED_BY_AUTHORIZATION`, `BLOCKED_BY_ENVIRONMENT`, `NOT_RUN`, `NOT_VERIFIED`.
+
+## R5 CP2 navigation update (2026-10-14)
+
+- **F-04 walking maneuver subfeature — `PASS` (browser, subfeature scope).** `pnpm data:cp2:isolated-browser` exit 0 (`.release-evidence/CP2/isolated-browser-fixed.log`): real historical OTP walk leg (4 maneuvers, 22 geometry coordinates), explicitly `SIMULATED` geolocation, invocation-owned thin canonical scratch DB, verified identity and post-stop `DROP_SUCCESS`. Asserts next-instruction rendering, along-route progression after two reliable fixes, low-accuracy hold, pause/resume, manual advance, sustained off-route, and refresh reference reset with no GPS persistence.
+- **CP2 original-requirement satisfaction — `PARTIAL`.** Recovery-to-navigation continuity, full cross-leg transit navigation and final complete-journey browser acceptance remain `NOT_VERIFIED`.
+- **V15/S11 walking validity — unchanged `BLOCKED_BY_DATA`.** `OTP_DERIVED_MANEUVER` means OTP-backed and consistency-checked, not independently validated pedestrian infrastructure; `INDEPENDENTLY_VALIDATED` is not claimed.
+- **Hardware GPS — `NOT_VERIFIED`.** No real outdoor device run; automated geolocation is `SIMULATED`.
+- Prior CP2 browser runs against the persistent product runtime were mislabeled isolated and are withdrawn; no product data cleanup/reset was performed.
+- Evidence classes: `SCHEMATIC` and `OTP_DERIVED_MANEUVER` are the only asserted walking levels.
 
 ## Evidence rules
 

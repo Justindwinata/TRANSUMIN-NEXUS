@@ -12,13 +12,20 @@ import { DEMO_REPLAY } from '../lib/demo-replay';
 import { useDeviceLocation } from '../lib/use-device-location';
 import {
   OFF_ROUTE_HISTORY,
-  devicePositionFromSample,
   distanceToPathMeters,
   isOffRoute,
+  isWalkingMode,
+  manuallyAdvanceManeuver,
   modeNavLabel,
   navigationMode,
+  navigationScopeKey,
   nextGuidance,
   pathPoints,
+  prepareWalkNavigation,
+  initialWalkProgress,
+  walkGeometryIdentity,
+  updateWalkProgress,
+  type WalkProgress,
   type NavMode,
 } from '../lib/navigation';
 import type { JourneyMapPoint } from './journey-map';
@@ -115,6 +122,17 @@ export function PassengerApp() {
   const [navigationPaused, setNavigationPaused] = useState(false);
   const navLegKey = useRef<string | null>(null);
   const navHistory = useRef<Array<{ distance: number | null }>>([]);
+  const lastNavSampleTimestamp = useRef<number | null>(null);
+  const [walkState, setWalkState] = useState<{
+    key: string | null;
+    progress: WalkProgress;
+  }>({
+    key: null,
+    progress: initialWalkProgress(),
+  });
+  const walkStateRef = useRef(walkState);
+  walkStateRef.current = walkState;
+  const walkNavigation = useRef<ReturnType<typeof prepareWalkNavigation>>(null);
   const [selectionMode, setSelectionMode] = useState<
     'origin' | 'destination' | null
   >(null);
@@ -273,41 +291,106 @@ export function PassengerApp() {
     };
   }, [active?.journey_id, active?.status]);
 
-  // Sustained off-route history for the current walking leg only; never a
-  // single noisy sample, and never persisted to the server.
+  // Device-local navigation; scope resets on recovery/geometry replacement.
   useEffect(() => {
-    if (!active || active.status !== 'ACTIVE' || navigationPaused) return;
-    const leg = active.segments.find(
-      (segment) =>
-        segment.sequence === active.progress?.completed_segment_count,
-    );
-    if (!leg || leg.mode !== 'WALK') {
-      navHistory.current = [];
-      navLegKey.current = null;
+    const leg =
+      active?.status === 'ACTIVE'
+        ? active.segments.find(
+            (segment) =>
+              segment.sequence ===
+              (active.progress?.completed_segment_count ?? 0),
+          )
+        : null;
+    if (!active || !leg || leg.mode !== 'WALK') {
+      if (
+        navLegKey.current !== null ||
+        navHistory.current.length > 0 ||
+        walkNavigation.current !== null ||
+        walkStateRef.current.key !== null
+      ) {
+        navHistory.current = [];
+        navLegKey.current = null;
+        lastNavSampleTimestamp.current = null;
+        walkNavigation.current = null;
+        const reset = { key: null, progress: initialWalkProgress() };
+        walkStateRef.current = reset;
+        setWalkState(reset);
+      }
       return;
     }
-    const key = `${active.journey_id}:${leg.sequence}`;
-    if (navLegKey.current !== key) {
+    const key = navigationScopeKey(
+      active.journey_id,
+      active.accepted_recovery_id,
+      leg,
+    );
+    const changed = navLegKey.current !== key;
+    if (changed) {
       navLegKey.current = key;
       navHistory.current = [];
+      lastNavSampleTimestamp.current = null;
+      walkNavigation.current = prepareWalkNavigation(leg);
+      const reset = { key, progress: initialWalkProgress() };
+      walkStateRef.current = reset;
+      setWalkState(reset);
     }
-    if (!device.navigationGrade) {
+    const prepared = walkNavigation.current;
+    const fix = device.position;
+    const base =
+      walkStateRef.current.key === key
+        ? walkStateRef.current.progress
+        : initialWalkProgress();
+    if (navigationPaused) {
+      navHistory.current = [];
+      const paused = {
+        ...base,
+        reliableFixes: 0,
+        alongMeters: null,
+        lastTimestamp: null,
+        status: 'PAUSED' as const,
+      };
+      walkStateRef.current = { key, progress: paused };
+      setWalkState({ key, progress: paused });
+      return;
+    }
+    if (!fix) return;
+    if (!device.navigationGrade || device.state !== 'GPS_TRACKING') {
+      if (base.status !== 'UNCERTAIN' || base.reliableFixes !== 0) {
+        const uncertain = {
+          ...base,
+          reliableFixes: 0,
+          status: 'UNCERTAIN' as const,
+        };
+        walkStateRef.current = { key, progress: uncertain };
+        setWalkState({ key, progress: uncertain });
+      }
       navHistory.current = [];
       return;
     }
-    if (!device.position) return;
-    const path = pathPoints(leg);
-    const distance = path ? distanceToPathMeters(device.position, path) : null;
+    if (base.status === 'PAUSED') {
+      const resumed = {
+        ...base,
+        reliableFixes: 0,
+        status: 'UNCERTAIN' as const,
+      };
+      walkStateRef.current = { key, progress: resumed };
+      setWalkState({ key, progress: resumed });
+    }
+    if (fix.timestamp === lastNavSampleTimestamp.current) return;
+    lastNavSampleTimestamp.current = fix.timestamp;
+    if (prepared) {
+      const next = updateWalkProgress(prepared, base, fix, Date.now());
+      walkStateRef.current = { key, progress: next };
+      setWalkState({ key, progress: next });
+    }
     navHistory.current = [
       ...navHistory.current.slice(-(OFF_ROUTE_HISTORY - 1)),
-      { distance },
+      { distance: distanceToPathMeters(fix, pathPoints(leg)) },
     ];
   }, [
-    active?.journey_id,
-    active?.status,
-    active?.progress?.completed_segment_count,
+    active,
     device.position?.timestamp,
     device.navigationGrade,
+    device.state,
     navigationPaused,
   ]);
 
@@ -849,15 +932,30 @@ export function PassengerApp() {
     displayingActive && active.status === 'ACTIVE'
       ? navigationMode(segments, completed, boarding)
       : 'PREPARING';
-  const navSample = devicePositionFromSample(device.position);
+  const currentWalkLeg = currentLeg?.mode === 'WALK' ? currentLeg : null;
+  const currentWalkNavigation = currentWalkLeg
+    ? prepareWalkNavigation(currentWalkLeg)
+    : null;
+  // ponytail: concise hash identity; never emit full geometry/steps JSON to DOM.
+  const walkScopeKey =
+    active && currentWalkLeg
+      ? `${active.journey_id}:${active.accepted_recovery_id ?? 'ORIGINAL'}:${walkGeometryIdentity(currentWalkLeg)}`
+      : null;
+  const scopedWalkProgress =
+    currentWalkNavigation && walkState.key === walkScopeKey
+      ? walkState.progress
+      : null;
   const navGuidance =
     displayingActive && active.status === 'ACTIVE'
-      ? nextGuidance(segments, completed, boarding, navSample)
+      ? nextGuidance(
+          segments,
+          completed,
+          boarding,
+          scopedWalkProgress ?? undefined,
+        )
       : null;
   const offRouteActive =
-    displayingActive &&
-    active.status === 'ACTIVE' &&
-    (navMode === 'WALK_TO_BOARDING_STOP' || navMode === 'WALK_TRANSFER')
+    displayingActive && active.status === 'ACTIVE' && isWalkingMode(navMode)
       ? isOffRoute(navHistory.current, pathPoints(currentLeg))
       : false;
   const offRoute = displayingActive && !navigationPaused && offRouteActive;
@@ -1295,8 +1393,25 @@ export function PassengerApp() {
                   <div
                     className={`navigation-card${navigationPaused ? ' paused' : ''}${offRoute ? ' off-route' : ''}`}
                     role="region"
-                    aria-label={modeNavLabel(navMode)}
+                    aria-label={`${modeNavLabel(navMode)}${navGuidance?.title ? `: ${navGuidance.title}` : ''}`}
                     data-provenance={navGuidance?.provenance ?? 'NO_DEVICE'}
+                    data-walk-evidence={
+                      currentWalkNavigation?.evidence ?? 'NONE'
+                    }
+                    data-maneuver-index={
+                      scopedWalkProgress ? scopedWalkProgress.maneuverIndex : -1
+                    }
+                    data-maneuver-total={
+                      currentWalkNavigation?.maneuvers.length ?? 0
+                    }
+                    data-walk-status={scopedWalkProgress?.status ?? 'none'}
+                    data-navigation-scope={walkScopeKey ?? 'none'}
+                    data-navigation-paused={navigationPaused ? 'true' : 'false'}
+                    data-walk-reposition={
+                      scopedWalkProgress?.needsManualReposition
+                        ? 'true'
+                        : 'false'
+                    }
                   >
                     <strong className="navigation-title">
                       {navGuidance ? navGuidance.title : modeNavLabel(navMode)}
@@ -1311,10 +1426,53 @@ export function PassengerApp() {
                         kendaraan langsung.
                       </p>
                     )}
+                    {navGuidance?.provenance === 'OTP_DERIVED_MANEUVER' && (
+                      <p className="fine-print">
+                        Maneuver OTP pada snapshot rute; belum divalidasi
+                        independen. Posisi perangkat mentah ditampilkan di peta
+                        tanpa snapping.
+                      </p>
+                    )}
                     {!navGuidance && (
                       <p className="fine-print">
                         Navigasi belum tersedia. Gunakan penandaan manual di
                         bawah.
+                      </p>
+                    )}
+                    {currentWalkNavigation?.evidence ===
+                      'OTP_DERIVED_MANEUVER' && (
+                      <p className="fine-print" data-testid="walk-progress">
+                        Langkah {(scopedWalkProgress?.maneuverIndex ?? 0) + 1}{' '}
+                        dari {currentWalkNavigation.maneuvers.length}
+                        {navGuidance?.nextInstruction &&
+                        navGuidance.nextDistanceMeters !== null &&
+                        Number.isFinite(navGuidance.nextDistanceMeters)
+                          ? ` · berikutnya ±${Math.round(navGuidance.nextDistanceMeters)} m: ${navGuidance.nextInstruction}`
+                          : ''}
+                        {navGuidance?.remainingMeters !== undefined &&
+                        navGuidance.remainingMeters !== null &&
+                        Number.isFinite(navGuidance.remainingMeters)
+                          ? ` · sisa leg ±${Math.round(navGuidance.remainingMeters)} m`
+                          : ''}
+                        {scopedWalkProgress?.status === 'ACQUIRING'
+                          ? ' · GPS: memperoleh sinyal'
+                          : scopedWalkProgress?.status === 'UNCERTAIN'
+                            ? ' · GPS: tidak pasti'
+                            : scopedWalkProgress?.status === 'PAUSED'
+                              ? ' · GPS: dijeda'
+                              : ''}
+                      </p>
+                    )}
+                    {currentWalkNavigation?.evidence ===
+                      'SCHEMATIC_GEOMETRY' && (
+                      <p className="fine-print" data-testid="walk-schematic">
+                        {currentWalkNavigation.reason ??
+                          'Langkah belok tidak tersedia.'}
+                        {navGuidance?.remainingMeters !== undefined &&
+                        navGuidance.remainingMeters !== null &&
+                        Number.isFinite(navGuidance.remainingMeters)
+                          ? ` Sisa leg ±${Math.round(navGuidance.remainingMeters)} m.`
+                          : ''}
                       </p>
                     )}
                     {offRoute && (
@@ -1328,6 +1486,7 @@ export function PassengerApp() {
                       </p>
                     )}
                     <p className="fine-print">
+                      Tujuan: {navGuidance?.destination ?? 'belum tersedia'} ·
                       Status navigasi: {modeNavLabel(navMode)}{' '}
                       {navigationPaused ? '· dijeda' : ''}
                     </p>
@@ -1341,6 +1500,29 @@ export function PassengerApp() {
                           ? 'Lanjutkan navigasi'
                           : 'Jeda navigasi'}
                       </button>
+                      {currentWalkNavigation?.evidence ===
+                        'OTP_DERIVED_MANEUVER' && (
+                        <button
+                          type="button"
+                          className="text-button"
+                          onClick={() => {
+                            const prepared = walkNavigation.current;
+                            if (!prepared || walkScopeKey !== walkState.key)
+                              return;
+                            const next = {
+                              key: walkScopeKey,
+                              progress: manuallyAdvanceManeuver(
+                                prepared,
+                                walkState.progress,
+                              ),
+                            };
+                            walkStateRef.current = next;
+                            setWalkState(next);
+                          }}
+                        >
+                          Manuver berikutnya
+                        </button>
+                      )}
                     </div>
                   </div>
                   {currentLeg && (

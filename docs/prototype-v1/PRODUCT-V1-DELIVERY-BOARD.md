@@ -1,6 +1,6 @@
 # Product V1 delivery board
 
-Updated: 2026-10-13. Classification: `PROTOTYPE_V1_PARTIAL`. Verified local checkpoint; publication pending commit.
+Updated: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. CP2 source changes verified locally; publication pending commit/push.
 
 ## Provenance
 
@@ -12,7 +12,16 @@ Repository is sanitized product-publication lineage, not original research Git h
 - Runtime OTP graph, JAR, JRE, databases, secrets, raw/processed datasets, logs, screenshots, and build outputs are not versioned here.
 - Local evidence paths below refer to `/private/var/folders/9w/27j9sy2n31scrtpmj0tmgwl40000gn/T/opencode/`; logs are not repository artifacts.
 
-## Current milestone
+## Current milestone — R5 CP2
+
+- CP1 post-commit standard integration: `PASS`, 9/9 suites, 31 tests, exit 0 (`.release-evidence/r5-cp1-postcommit.log`), source `8b99862cfccef858c6c4e96da5c502e6cc6245a7`.
+- CP2 maneuver browser subfeature: `PASS` on real historical OTP steps and explicitly `SIMULATED` geolocation in an invocation-owned thin canonical scratch DB. `pnpm data:cp2:isolated-browser`, exit 0, `.release-evidence/CP2/isolated-browser-fixed.log`; 4 maneuvers, 22 geometry coordinates, progression, inaccurate GPS hold, pause/manual, sustained off-route and refresh reference reset. Scratch identity and post-stop `DROP_SUCCESS` verified. Source is baseline plus this checkpoint's delta; not full-snapshot research acceptance.
+- Web unit `PASS` 40/40; API unit `PASS` 106/106; typecheck, lint, data contracts (11), format and source/build secret scan `PASS` after corrective reruns. No new product migrations.
+- CP2 recovery-to-navigation browser continuity and final full R5 acceptance: `NOT_VERIFIED`; CP3–CP6 not closed. Hardware GPS `NOT_VERIFIED`; independent pedestrian validation `BLOCKED_BY_DATA`.
+- Earlier CP2 browser runs against persistent product runtime are **not accepted isolation evidence**. Test journey state was created; no cleanup/reset of product data was performed. Corrected scratch run supersedes those runs for navigation browser evidence.
+- No production readiness claim. See `docs/delivery/CP2-WALKING-NAVIGATION.md` for scope and reproduction.
+
+## Historical R3 milestone
 
 R3 checkpoint records executed evidence only. Classification remains `PROTOTYPE_V1_PARTIAL`. Application runtime source is unchanged; R3 harnesses add exact browser evidence and fail-closed durable artifact output. V20/S14 `PASS` on the exact supported 20-step workflow; S09, named POI, walking, provider, and Tier B limitations remain visible.
 

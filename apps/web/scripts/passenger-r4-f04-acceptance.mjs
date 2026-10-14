@@ -117,24 +117,32 @@ try {
     .getByRole('heading', { name: 'Your active journey' })
     .waitFor({ timeout: 30000 });
 
-  // The initial leg for this scenario is a walking leg; guidance is schematic.
+  // The initial leg for this scenario is a walking leg; CP2 renders either
+  // OTP-derived maneuvers (real steps) or schematic fallback. Accept both
+  // honest labels, never fabricated turns.
   await page
-    .getByText(/Jalan kaki menuju|skematik|Status navigasi:/i)
+    .getByText(/Jalan kaki menuju|skematik|Mulai berjalan|Status navigasi:/i)
     .first()
     .waitFor({ timeout: 15000 });
   // Transit leg guidance must show schedule context, not fake live countdowns.
-  const activeLeg = await page.evaluate(() =>
-    document.body.innerText.slice(0, 4000),
-  );
+  const activeLeg = await page.locator('.navigation-card').innerText();
   assert.ok(
     !/Countdown|seconds to arrival/i.test(activeLeg),
     'Live vehicle countdown fabricated.',
   );
   summary.initial_leg_guidance_present = true;
+  const provenance = await page
+    .locator('.navigation-card')
+    .getAttribute('data-provenance');
   assert.ok(
-    /skematik|geometri rute OTP|bukan petunjuk belok/i.test(
-      activeLeg.slice(0, 4000),
-    ),
+    provenance === 'SCHEMATIC_GEOMETRY' ||
+      provenance === 'OTP_DERIVED_MANEUVER',
+    `Walking evidence classification missing: ${provenance}`,
+  );
+  assert.ok(
+    provenance === 'OTP_DERIVED_MANEUVER'
+      ? /Maneuver OTP.*belum divalidasi independen/i.test(activeLeg)
+      : /skematik|geometri rute OTP|bukan petunjuk belok/i.test(activeLeg),
     'Walking provenance missing.',
   );
 
@@ -222,18 +230,20 @@ try {
     .getByRole('button')
     .first()
     .waitFor({ timeout: 120000 });
+  await deniedPage
+    .getByRole('region', { name: 'Journey choices' })
+    .getByRole('button')
+    .first()
+    .click();
   await deniedPage.getByRole('button', { name: 'Mulai Perjalanan' }).click();
   await deniedPage
     .getByRole('heading', { name: 'Your active journey' })
     .waitFor({ timeout: 30000 });
+  await deniedPage.locator('.navigation-card').waitFor({ timeout: 15000 });
+  const deniedCard = await deniedPage.locator('.navigation-card').innerText();
   assert.ok(
-    (await deniedPage.evaluate(() => document.body.innerText)).includes(
-      'Jalan kaki',
-    ) ||
-      (await deniedPage.evaluate(() => document.body.innerText)).includes(
-        'Navigasi',
-      ),
-    'Walking guidance missing in denied GPS context.',
+    /Jalan kaki|Navigasi|Langkah|Maneuver/i.test(deniedCard),
+    `Walking guidance missing in denied GPS context: ${deniedCard.slice(0, 900)}`,
   );
   summary.gps_denied_fallback_present = true;
 

@@ -44,6 +44,7 @@
     "data:phase5b:verify": "pnpm --filter @transum-in/api data:phase5b:verify",
     "data:product-p1:verify": "pnpm --filter @transum-in/api data:product-p1:verify",
     "data:product-p1r:serve": "pnpm --filter @transum-in/api data:product-p1r:serve",
+    "data:cp2:isolated-browser": "pnpm --filter @transum-in/api data:cp2:isolated-browser",
     "data:phase5b:record": "pnpm --filter @transum-in/api data:phase5b:record && prettier --write data/manifests/RUN-5B-RECOVERY-COMPARISON-EVIDENCE.json",
     "otp:preflight": "bash scripts/routing/otp-phase4ba.sh preflight",
     "otp:prepare": "bash scripts/routing/otp-phase4ba.sh prepare",
