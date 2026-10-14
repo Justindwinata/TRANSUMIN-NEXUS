@@ -84,6 +84,30 @@ try {
     !/tersedia sopir|driver tersedia|harga pasti|fare confirmed/i.test(body),
     'Fabricated availability or fare.',
   );
+  // LEVEL 1 trip context: coordinates leave the page only on explicit user
+  // action, and they are copied, never embedded in a provider URL.
+  await ctx.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.getByRole('button', { name: 'Salin tujuan' }).click();
+  await page.getByText(/^Disalin: /).waitFor({ timeout: 10000 });
+  const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+  assert.ok(
+    clipboard.startsWith('Tujuan Transum-In: '),
+    `Clipboard trip context unexpected: ${clipboard}`,
+  );
+  const pageText = await page.locator('body').innerText();
+  assert.ok(
+    !/\d+\.\d{4,}/.test(pageText),
+    'Raw coordinates rendered into the page text.',
+  );
+  assert.ok(
+    await links.evaluateAll((nodes) =>
+      nodes.every((node) => new URL(node.href).pathname === '/'),
+    ),
+    'Handoff targets must be provider homepages with no redirect path.',
+  );
+  summary.trip_context_copy = true;
+  summary.coordinates_in_dom = false;
+  summary.redirect_params = false;
   await page.screenshot({ path: '.release-evidence/R4/r4-f06-handoff.png' });
   summary.providers = ['Gojek', 'Grab', 'Bluebird'];
   summary.coordinate_transfer = false;

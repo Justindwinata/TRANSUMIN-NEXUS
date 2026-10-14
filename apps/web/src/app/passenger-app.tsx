@@ -175,6 +175,8 @@ export function PassengerApp() {
   );
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [handoffCopied, setHandoffCopied] = useState('');
+  const [handoffError, setHandoffError] = useState('');
   const [reportCategory, setReportCategory] = useState('SERVICE');
   const [reportObservedAt, setReportObservedAt] = useState('');
   const [reportDescription, setReportDescription] = useState('');
@@ -1727,6 +1729,37 @@ export function PassengerApp() {
                           Lanjutkan dengan {provider.name}
                         </a>
                       ))}
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => {
+                          const last = active?.segments.at(-1)?.to;
+                          if (!last) return;
+                          navigator.clipboard
+                            .writeText(
+                              `Tujuan Transum-In: ${last.name} (${last.latitude}, ${last.longitude})`,
+                            )
+                            .then(() => {
+                              setHandoffCopied(
+                                `Disalin: ${last.name}. Tempelkan di aplikasi penyedia.`,
+                              );
+                              setHandoffError('');
+                            })
+                            .catch(() => {
+                              setHandoffError(
+                                'Penyalinan diblokir perangkat. Tujuan tetap terlihat di atas.',
+                              );
+                              setHandoffCopied('');
+                            });
+                        }}
+                      >
+                        Salin tujuan
+                      </button>
+                      <p className="fine-print" role="status">
+                        {handoffCopied || handoffError
+                          ? handoffCopied || handoffError
+                          : 'Menyalin tujuan untuk aplikasi penyedia hanya lewat tombol ini; koordinat tidak pernah tampil di halaman.'}
+                      </p>
                     </div>
                   )}
                   {journeyFinished ? (

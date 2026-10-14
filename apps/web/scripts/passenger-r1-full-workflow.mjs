@@ -1023,6 +1023,21 @@ try {
       .first()
       .waitFor({ timeout: 30_000 });
     await page.locator('.leg-list').first().waitFor({ timeout: 30_000 });
+    // After reload the journey fetch and the map source effect complete
+    // asynchronously; wait for the expected source count instead of racing on
+    // an unset attribute.
+    await page
+      .waitForFunction(
+        (expected) =>
+          Number(
+            document
+              .querySelector('.maplibre-frame')
+              ?.getAttribute('data-route-source-count'),
+          ) === expected,
+        active.segments.length,
+        { timeout: 20_000 },
+      )
+      .catch(() => undefined);
     const acceptedMap = await page
       .locator('.maplibre-frame')
       .evaluate((node) => ({
