@@ -417,6 +417,7 @@ function acceptanceFixture(
         acceptedStateTransitionId: proposal.stateTransitionId,
         acceptedMobilityProjectionVersion: proposal.mobilityProjectionVersion,
         acceptedJourneyFingerprint: acceptInputValue.acceptedJourneyFingerprint,
+        predecessorRecoveryId: proposal.baseRecoveryId ?? null,
         acceptedJourney: acceptInputValue.acceptedJourney!,
         acceptedAt: acceptInputValue.acceptedAt,
       };

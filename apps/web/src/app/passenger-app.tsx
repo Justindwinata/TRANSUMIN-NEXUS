@@ -7,7 +7,15 @@ import {
   WarningCircleIcon,
 } from '@phosphor-icons/react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { PassengerApiError, passengerApi } from '../lib/passenger-api';
+import {
+  PassengerApiError,
+  acceptanceReconcileOutcome,
+  canCommitRecovery,
+  passengerApi,
+  recoveryProposalKey,
+  recoverySource,
+  type RecoverySource,
+} from '../lib/passenger-api';
 import { DEMO_REPLAY } from '../lib/demo-replay';
 import { useDeviceLocation } from '../lib/use-device-location';
 import {
@@ -99,10 +107,29 @@ export function PassengerApp() {
   const [alternatives, setAlternatives] = useState<Journey[]>([]);
   const [selected, setSelected] = useState<Journey | null>(null);
   const [active, setActive] = useState<Journey | null>(null);
+  const activeRef = useRef<Journey | null>(null);
+  activeRef.current = active;
   const [alerts, setAlerts] = useState<JourneyAlert[]>([]);
   const [recovery, setRecovery] = useState<Recovery | null>(null);
   const [acceptance, setAcceptance] = useState<RecoveryAcceptance | null>(null);
   const acceptKey = useRef<string | null>(null);
+  // G1-A: recoveries and acceptance follow later-over-wins request identity;
+  // only the newest in-flight proposal/acceptance may commit frontend state.
+  const recoveryRequestId = useRef(0);
+  const recoveryRequest = useRef<{
+    id: number;
+    controller: AbortController;
+  } | null>(null);
+  // G1-A identity: a mounted snapshot is stale as soon as a newer journey
+  // generation (remount, current-journey switch, restored recovery, or new
+  // progress) supersedes it. `recoverySource` is the latest live journey;
+  // `activeGeneration` never moves backwards within one mount.
+  const recoveryJourney = useRef<RecoverySource | null>(null);
+  const activeGeneration = useRef(0);
+  const [recoveryStatus, setRecoveryStatus] = useState<
+    'NEEDS_RECONCILE' | 'RECONCILING' | null
+  >(null);
+  const acceptingRecovery = useRef<{ key: string; id: number } | null>(null);
   const [alertError, setAlertError] = useState('');
   const [streamStatus, setStreamStatus] = useState<
     'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'OFFLINE'
@@ -170,6 +197,14 @@ export function PassengerApp() {
   } | null>(null);
   const lastBest = useRef<ReturnType<typeof rankingFingerprint> | null>(null);
 
+  function commitCurrentJourney(journey: Journey) {
+    activeGeneration.current += 1;
+    activeRef.current = journey;
+    recoveryJourney.current = recoverySource(journey);
+    setActive(journey);
+    setSelected(journey);
+  }
+
   async function loadPersistedReports(journeyId: string) {
     setReportsLoading(true);
     setReportsError('');
@@ -183,6 +218,8 @@ export function PassengerApp() {
   }
 
   useEffect(() => {
+    let mounted = true;
+    const startupGeneration = activeGeneration.current;
     setDeparture(initialJakartaDateTime());
     setProgressAt(initialJakartaDateTime());
     setReportObservedAt(initialJakartaDateTime());
@@ -191,24 +228,69 @@ export function PassengerApp() {
       void passengerApi
         .getJourney(storedJourney)
         .then((journey) => {
-          setActive(journey);
-          setSelected(journey);
+          // Never let a slow startup read overwrite a newer generation:
+          // a future remount or a switched current journey makes this older
+          // mount stale even if it resolves last.
+          if (!mounted || startupGeneration !== activeGeneration.current)
+            return;
+          commitCurrentJourney(journey);
+          const generation = activeGeneration.current;
+          const source = recoverySource(journey);
           void loadPersistedReports(journey.journey_id);
           const storedRecovery = localStorage.getItem(
             `${recoveryKey}.${journey.journey_id}`,
           );
           if (storedRecovery) {
+            const requestId = ++recoveryRequestId.current;
+            recoveryRequest.current?.controller.abort();
+            const controller = new AbortController();
+            recoveryRequest.current = { id: requestId, controller };
             void passengerApi
-              .getRecovery(storedRecovery)
-              .then(setRecovery)
+              .getRecovery(storedRecovery, controller.signal)
+              .then((recovered) => {
+                if (
+                  mounted &&
+                  canCommitRecovery({
+                    requestId,
+                    latestRequestId: recoveryRequestId.current,
+                    generation,
+                    latestGeneration: activeGeneration.current,
+                    captured: source,
+                    latest: recoveryJourney.current,
+                  }) &&
+                  recovered.original_journey_id === source.journeyId
+                )
+                  setRecovery(recovered);
+              })
               .catch(() => {
-                localStorage.removeItem(`${recoveryKey}.${journey.journey_id}`);
+                if (
+                  mounted &&
+                  canCommitRecovery({
+                    requestId,
+                    latestRequestId: recoveryRequestId.current,
+                    generation,
+                    latestGeneration: activeGeneration.current,
+                    captured: source,
+                    latest: recoveryJourney.current,
+                  })
+                )
+                  localStorage.removeItem(
+                    `${recoveryKey}.${journey.journey_id}`,
+                  );
               });
           }
         })
         .catch((cause: unknown) => {
+          if (!mounted || startupGeneration !== activeGeneration.current)
+            return;
           if (cause instanceof PassengerApiError && cause.status === 404) {
             localStorage.removeItem(journeyKey);
+            activeGeneration.current += 1;
+            activeRef.current = null;
+            recoveryJourney.current = null;
+            setActive(null);
+            setSelected(null);
+            setRecovery(null);
             setError(
               'Perjalanan tersimpan tidak ditemukan. Silakan mulai lagi.',
             );
@@ -219,8 +301,17 @@ export function PassengerApp() {
     }
     void passengerApi
       .config()
-      .then((config) => setSnapshotId(config.network_snapshot_id))
-      .catch((cause: unknown) => setError(errorMessage(cause)));
+      .then((config) => {
+        if (mounted) setSnapshotId(config.network_snapshot_id);
+      })
+      .catch((cause: unknown) => {
+        if (mounted) setError(errorMessage(cause));
+      });
+    return () => {
+      mounted = false;
+      activeGeneration.current += 1;
+      recoveryRequestId.current += 1;
+    };
   }, []);
 
   useEffect(() => {
@@ -616,8 +707,9 @@ export function PassengerApp() {
         historical ? selected.start_at : undefined,
       );
       localStorage.removeItem(keyName);
-      setActive(journey);
-      setSelected(journey);
+      commitCurrentJourney(journey);
+      setRecoveryStatus(null);
+      acceptingRecovery.current = null;
       if (historical)
         setProgressAt(initialJakartaDateTime(new Date(selected.start_at)));
       setAlerts([]);
@@ -651,8 +743,7 @@ export function PassengerApp() {
         toJakartaIso(progressAt),
         active.accepted_recovery_id ?? null,
       );
-      setActive(updated);
-      setSelected(updated);
+      commitCurrentJourney(updated);
       setMessage(
         `Naik dicatat pada bagian ${currentLeg.sequence + 1}: ${currentLeg.from.name}.`,
       );
@@ -674,8 +765,7 @@ export function PassengerApp() {
         toJakartaIso(progressAt),
         active.accepted_recovery_id ?? null,
       );
-      setActive(alighted);
-      setSelected(alighted);
+      commitCurrentJourney(alighted);
       setMessage(
         `Turun dicatat pada bagian ${currentLeg.sequence + 1}: ${currentLeg.to.name}.`,
       );
@@ -700,8 +790,7 @@ export function PassengerApp() {
         toJakartaIso(progressAt),
         active.accepted_recovery_id ?? null,
       );
-      setActive(updated);
-      setSelected(updated);
+      commitCurrentJourney(updated);
       setMessage(
         updated.status === 'COMPLETED'
           ? 'Perjalanan selesai.'
@@ -806,28 +895,53 @@ export function PassengerApp() {
   }
 
   async function proposeRecovery(alert: JourneyAlert) {
-    if (!active || !alertIsCurrent(alert)) return;
+    const current = activeRef.current;
+    if (!current || !alertIsCurrent(alert)) return;
+    const requestId = ++recoveryRequestId.current;
+    recoveryRequest.current?.controller.abort();
+    const controller = new AbortController();
+    const source = recoverySource(current);
+    const generation = activeGeneration.current;
+    recoveryRequest.current = { id: requestId, controller };
     setBusy('recovery');
     setError('');
     try {
-      const key = `passenger:${active.journey_id}:${alert.impact_id}:${active.progress?.revision ?? 0}`;
+      const key = recoveryProposalKey({
+        journeyId: current.journey_id,
+        impactId: alert.impact_id,
+        revision: source.revision,
+        acceptedRecoveryId: source.acceptedRecoveryId,
+      });
       const timeKey = `transumin.recovery-at.${key}`;
       let recoveryAt = localStorage.getItem(timeKey);
       if (!recoveryAt) {
-        recoveryAt = active.progress?.recorded_at ?? new Date().toISOString();
+        recoveryAt = current.progress?.recorded_at ?? new Date().toISOString();
         localStorage.setItem(timeKey, recoveryAt);
       }
       const result = await passengerApi.recovery(
-        active.journey_id,
+        current.journey_id,
         alert.impact_id,
         key,
         recoveryAt,
+        controller.signal,
       );
+      if (
+        !canCommitRecovery({
+          requestId,
+          latestRequestId: recoveryRequestId.current,
+          generation,
+          latestGeneration: activeGeneration.current,
+          captured: source,
+          latest: recoveryJourney.current,
+        }) ||
+        result.original_journey_id !== source.journeyId
+      )
+        return;
       setRecovery(result);
       setAcceptance(null);
       acceptKey.current = null;
       localStorage.setItem(
-        `${recoveryKey}.${active.journey_id}`,
+        `${recoveryKey}.${current.journey_id}`,
         result.recovery_id,
       );
       setMessage(
@@ -836,61 +950,121 @@ export function PassengerApp() {
           : recoverySummary(result),
       );
     } catch (cause) {
+      if (requestId !== recoveryRequestId.current) return;
+      if (
+        cause instanceof Error &&
+        (cause.name === 'AbortError' ||
+          (cause as { cause?: unknown }).cause instanceof DOMException)
+      )
+        return;
       setError(errorMessage(cause));
     } finally {
-      setBusy(null);
+      if (requestId === recoveryRequestId.current) {
+        recoveryRequest.current = null;
+        setBusy(null);
+      }
     }
   }
 
-  async function acceptRecovery() {
+  async function acceptRecovery(readOnly = false) {
+    const current = activeRef.current;
+    const proposal = recovery;
     if (
-      !active ||
-      !recovery ||
-      recovery.original_journey_id !== active.journey_id
+      !current ||
+      !proposal ||
+      acceptingRecovery.current ||
+      proposal.original_journey_id !== current.journey_id
     )
       return;
-    if (recovery.status !== 'COMPLETED' || !recovery.proposed_journey) {
+    if (!readOnly && recoveryStatus) return;
+    if (
+      !readOnly &&
+      (proposal.status !== 'COMPLETED' ||
+        !proposal.proposed_journey ||
+        (current.progress?.revision ?? 0) !== proposal.progress_revision)
+    ) {
       setError(
-        'Tidak ada rute pengganti yang aman. Rencana awal tetap tidak berubah.',
+        'Perjalanan sudah berubah atau proposal tidak aman. Minta recovery baru.',
       );
       return;
     }
-    if (active.progress?.revision !== recovery.progress_revision) {
-      setError(
-        'Perjalanan sudah berubah sejak proposal ini. Minta recovery baru.',
-      );
-      return;
-    }
+    const source = recoverySource(current);
+    const generation = activeGeneration.current;
+    const requestId = ++recoveryRequestId.current;
+    const controller = new AbortController();
+    recoveryRequest.current?.controller.abort();
+    recoveryRequest.current = { id: requestId, controller };
+    acceptingRecovery.current = { key: proposal.recovery_id, id: requestId };
+    const canCommit = () =>
+      canCommitRecovery({
+        requestId,
+        latestRequestId: recoveryRequestId.current,
+        generation,
+        latestGeneration: activeGeneration.current,
+        captured: source,
+        latest: recoveryJourney.current,
+      });
     setBusy('recovery');
     setError('');
+    setMessage('');
+    let receipt: RecoveryAcceptance | null = null;
+    let postFailure: unknown = null;
     try {
-      if (!acceptKey.current) acceptKey.current = crypto.randomUUID();
-      const result = await passengerApi.acceptRecovery(
-        recovery.recovery_id,
-        recovery.progress_revision,
-        acceptKey.current,
-      );
-      setAcceptance(result);
-      setRecovery((current) => ({
-        ...current!,
-        progress_revision: result.accepted_progress_revision,
-        proposed_journey: result.current_replacement_journey,
-        proposed_fingerprint: result.accepted_journey_fingerprint,
-      }));
-      const refreshed = await passengerApi.getJourney(active.journey_id);
-      if (refreshed.status !== 'ACTIVE') {
-        setError('Perjalanan tidak lagi aktif setelah recovery diterima.');
-        return;
+      if (!readOnly) {
+        if (!acceptKey.current) acceptKey.current = crypto.randomUUID();
+        try {
+          receipt = await passengerApi.acceptRecovery(
+            proposal.recovery_id,
+            proposal.progress_revision,
+            acceptKey.current,
+            controller.signal,
+          );
+        } catch (cause) {
+          postFailure = cause;
+        }
       }
-      setActive(refreshed);
-      setSelected(refreshed);
-      setMessage(
-        'Recovery diterima. Rencana awal tetap tersimpan; rute aktif sekarang mengikuti rute pengganti.',
+      if (!canCommit()) return;
+      setRecoveryStatus('RECONCILING');
+      // POST outcome may be unknown. Only authoritative reads decide what
+      // happened; a retry of this branch never issues another mutation.
+      const authoritative = await passengerApi.reconcileRecovery(
+        current.journey_id,
+        proposal.recovery_id,
+        controller.signal,
       );
+      if (!canCommit()) return;
+      const outcome = acceptanceReconcileOutcome({
+        journey: authoritative.journey,
+        recoveryId: proposal.recovery_id,
+      });
+      commitCurrentJourney(authoritative.journey);
+      setRecovery(authoritative.recovery);
+      setRecoveryStatus(null);
+      if (outcome === 'APPLIED') {
+        setAcceptance(receipt);
+        setMessage('Recovery diterima. Rute aktif mengikuti rute pengganti.');
+      } else {
+        setAcceptance(null);
+        setError(
+          postFailure
+            ? errorMessage(postFailure)
+            : 'Recovery ini belum menjadi rute aktif. Tinjau status server sebelum mencoba lagi.',
+        );
+      }
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (!canCommit()) return;
+      setRecoveryStatus('NEEDS_RECONCILE');
+      setError(
+        receipt
+          ? 'Recovery diterima server, tetapi rute aktif belum dapat dimuat. Muat ulang status; jangan kirim penerimaan baru.'
+          : `Status penerimaan belum dapat dipastikan. Muat ulang status tanpa mengirim penerimaan baru. ${errorMessage(cause)}`,
+      );
     } finally {
-      setBusy(null);
+      if (requestId === recoveryRequestId.current) {
+        recoveryRequest.current = null;
+        acceptingRecovery.current = null;
+        setBusy(null);
+      }
     }
   }
 
@@ -1308,6 +1482,8 @@ export function PassengerApp() {
                     <li
                       key={`${segment.sequence}-${segment.mode}`}
                       className={position ?? ''}
+                      data-segment-sequence={String(segment.sequence)}
+                      data-leg-fingerprint={walkGeometryIdentity(segment)}
                     >
                       <div className="leg-heading">
                         <span className="mode-symbol">
@@ -2127,6 +2303,22 @@ export function PassengerApp() {
                 <div className="section-line">
                   <h2 id="recovery-heading">Recovery option</h2>
                 </div>
+                {recoveryStatus && (
+                  <div className="feedback warning" role="status">
+                    <p>
+                      Status penerimaan perlu dicocokkan dengan server. Rute
+                      tampilan belum dipastikan.
+                    </p>
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={busy !== null}
+                      onClick={() => void acceptRecovery(true)}
+                    >
+                      Muat ulang status (tanpa menerima ulang)
+                    </button>
+                  </div>
+                )}
                 <p className="recovery-summary">{recoverySummary(recovery)}</p>
                 <p className="fine-print">
                   This is a proposal. It does not automatically replace your

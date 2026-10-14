@@ -2,6 +2,24 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { assertCp2Runtime } from './cp2-runtime-guard.mjs';
 
+/**
+ * Library-derived navigation identities (G1-D). Node 22 type-stripping imports
+ * the exact product TS source; no copies are available in this script. If the
+ * runner cannot strip types the run aborts NOT VERIFIED instead of fabricating.
+ */
+let nav;
+try {
+  nav = await import('../src/lib/navigation.ts');
+} catch {
+  nav = null;
+}
+let mapGeometry;
+try {
+  mapGeometry = await import('../src/lib/map-geometry.ts');
+} catch {
+  mapGeometry = null;
+}
+
 const webUrl = process.env.PASSENGER_WEB_URL ?? 'http://127.0.0.1:3302';
 const apiUrl =
   process.env.PASSENGER_API_BASE_URL ?? 'http://127.0.0.1:3303/api/v1';
@@ -76,6 +94,52 @@ async function direct(path, options = {}) {
   );
   return body?.data;
 }
+/**
+ * G1-D exact digest reproduction for the map: same filter (mapGeometryPoints),
+ * feature identity (id/properties/geometry key order) and FNV-1a hash used by
+ * journey-map.tsx when it reads getSource(id).serialize().data. Hash-only; no
+ * raw residential coordinates cross into the DOM or this script's logs.
+ */
+function expectedMapFingerprint(journey) {
+  const generation = journey.accepted_recovery_id ?? 'ORIGINAL';
+  const out = [];
+  for (const segment of journey.segments ?? []) {
+    const points = mapGeometry.mapGeometryPoints(
+      segment.geometry?.coordinates ?? [],
+    );
+    if (points.length < 2) continue;
+    const feature = {
+      type: 'Feature',
+      id: segment.sequence,
+      properties: { sequence: segment.sequence, mode: segment.mode },
+      geometry: { type: 'LineString', coordinates: points },
+    };
+    const id = `journey-${journey.journey_id}-${generation}-segment-${segment.sequence}`;
+    out.push(
+      `${journey.journey_id}:${generation}:${id}:${nav.shortHash(JSON.stringify(feature))}`,
+    );
+  }
+  return out;
+}
+async function readMapObservability(page) {
+  return page.evaluate(() => {
+    const map =
+      document.querySelector('.map-frame') ??
+      document.querySelector('.maplibre-frame');
+    return {
+      hasFrame: Boolean(map),
+      length: Number(map?.getAttribute('data-route-source-count') ?? -1),
+      fingerprint: map?.getAttribute('data-route-source-fingerprint') ?? null,
+    };
+  });
+}
+function readJourney(page, id) {
+  return page.evaluate(
+    async (journeyId) =>
+      (await fetch(`/api/passenger/journeys/${journeyId}`)).json(),
+    id,
+  );
+}
 
 await assertCp2Runtime();
 const browser = await chromium.launch({
@@ -135,14 +199,19 @@ try {
   const sessionCookie = (await context.cookies()).find(
     (c) => c.name === 'transumin_proto_session',
   );
-  summary.owner_session = sessionCookie
+  assert.ok(
+    typeof sessionCookie?.value === 'string' &&
+      sessionCookie.value.split('.').length === 3,
+    'signed session expiry missing in cookie',
+  );
+  const ownerSession = sessionCookie
     ? decodeURIComponent(sessionCookie.value).split('.')[0]
     : null;
   assert.ok(
-    typeof summary.owner_session === 'string' &&
-      summary.owner_session.startsWith('passenger:'),
-    `expected passenger session cookie got ${summary.owner_session}`,
+    typeof ownerSession === 'string' && ownerSession.startsWith('passenger:'),
+    'expected passenger session cookie',
   );
+  console.error('ASSERT recovery.owner_session=passenger-[redacted]');
   assert.equal(activated.segments[0].mode, 'WALK');
   await page.getByRole('heading', { name: 'Your active journey' }).waitFor();
   const before = await attrs(page);
@@ -152,13 +221,10 @@ try {
   assert.ok(
     ['OTP_DERIVED_MANEUVER', 'SCHEMATIC_GEOMETRY'].includes(before.evidence),
   );
-  console.log(
-    `ASSERT recovery.walk_active scope=${before.scope} evidence=${before.evidence}`,
+  console.error(
+    `ASSERT recovery.walk_active scope=[hash_len=${String(before.scope).length}] evidence=${before.evidence}`,
   );
-  const activeBeforeRecovery = await page.evaluate(
-    async (id) => (await fetch(`/api/passenger/journeys/${id}`)).json(),
-    activated.journey_id,
-  );
+  const activeBeforeRecovery = await readJourney(page, activated.journey_id);
   assert.equal(activeBeforeRecovery.data.progress.completed_segment_count, 0);
   assert.equal(activeBeforeRecovery.data.status, 'ACTIVE');
   summary.original_segment_count = activeBeforeRecovery.data.segments.length;
@@ -168,6 +234,22 @@ try {
   summary.original_plan_id =
     activeBeforeRecovery.data.original_plan.journey_id ??
     activeBeforeRecovery.data.plan_journey_id;
+  assert.ok(nav && mapGeometry, 'navigation/map-geometry import unavailable');
+  const originalNavigation = nav.prepareWalkNavigation(activated.segments[0]);
+  assert.ok(
+    originalNavigation?.maneuvers.length > 1,
+    'old WALK needs advanceable real OTP maneuvers',
+  );
+  await page
+    .getByRole('button', { name: 'Manuver berikutnya', exact: true })
+    .click();
+  await page.waitForFunction(
+    () =>
+      document
+        .querySelector('.navigation-card')
+        ?.getAttribute('data-maneuver-index') === '1',
+  );
+  summary.old_maneuver_advanced_before_progress = true;
   summary.leg_progressed = true;
   const progressResponse = page.waitForResponse(
     (r) =>
@@ -178,10 +260,7 @@ try {
   );
   await page.getByRole('button', { name: 'Lanjutkan Perjalanan' }).click();
   assert.equal((await progressResponse).status(), 200);
-  const activeAfterWalkProgress = await page.evaluate(
-    async (id) => (await fetch(`/api/passenger/journeys/${id}`)).json(),
-    activated.journey_id,
-  );
+  const activeAfterWalkProgress = await readJourney(page, activated.journey_id);
   assert.equal(
     activeAfterWalkProgress.data.progress.completed_segment_count,
     1,
@@ -193,11 +272,34 @@ try {
     ].mode,
     'WALK',
   );
-  console.log(
-    `ASSERT recovery.walk_leg_progressed completed_segments=${activeAfterWalkProgress.data.progress.completed_segment_count} plan=${summary.original_plan_id}`,
+  assert.equal(summary.old_maneuver_advanced_before_progress, true);
+  console.error('ASSERT maneuver.old_advanced_before_progress=true');
+  console.error(
+    `ASSERT recovery.walk_leg_progressed completed_segments=${activeAfterWalkProgress.data.progress.completed_segment_count}`,
   );
   const activeAfterWalk = await page.evaluate(() => document.body.innerText);
   assert.ok(/Laporkan kondisi/.test(activeAfterWalk));
+
+  // G1-D base map observation before R1: exact digest of server geometry with
+  // the same filter/hash/feature identity that journey-map.tsx serializes.
+  const baseActual = await readMapObservability(page);
+  const baseExpected = expectedMapFingerprint(activeAfterWalkProgress.data);
+  assert.ok(baseActual.hasFrame, 'map frame (.map-frame) missing before R1');
+  assert.ok(
+    typeof baseActual.fingerprint === 'string' &&
+      baseActual.fingerprint.length > 0,
+    'base map fingerprint missing before recovery',
+  );
+  assert.deepEqual(
+    baseActual.fingerprint.split('|'),
+    baseExpected,
+    'base map digest not exact reproduction of server geometry',
+  );
+  summary.base_map_fingerprint_exact = true;
+  summary.base_map_source_count = baseActual.length;
+  console.error(
+    `ASSERT map.predecessor_digest exact=true segments=${String(baseExpected.length)}`,
+  );
 
   // Submit report through real passenger UI; status must remain REPORTED_UNVERIFIED.
   const target = page.locator('#report-target');
@@ -319,14 +421,18 @@ try {
     const otherCookie = (await otherContext.cookies()).find(
       (c) => c.name === 'transumin_proto_session',
     );
+    assert.ok(
+      typeof otherCookie?.value === 'string' &&
+        otherCookie.value.split('.').length === 3,
+      'signed session expiry missing in unaffected cookie',
+    );
     otherOwner = otherCookie
       ? decodeURIComponent(otherCookie.value).split('.')[0]
       : null;
-    assert.ok(otherOwner && otherOwner !== summary.owner_session);
-    summary.unaffected_owner_session = otherOwner;
+    assert.ok(otherOwner && otherOwner !== ownerSession);
     summary.unaffected_owner_alert_count = otherAlerts;
-    console.log(
-      `ASSERT alert.owner_targeted=true owner=${summary.owner_session} unaffected_owner=${otherOwner} alerts=0`,
+    console.error(
+      `ASSERT alert.owner_targeted=true unaffected_owner_alerts=${otherAlerts}`,
     );
 
     const recoveryResponse = page.waitForResponse(
@@ -346,24 +452,139 @@ try {
     }, recoveryId);
     assert.equal(crossOwnerStatus, 404, 'foreign owner read recovery proposal');
     summary.cross_owner_recovery_rejected = true;
-    console.log(
-      `ASSERT recovery.cross_owner_rejected status=${crossOwnerStatus} foreign_owner=${otherOwner}`,
+    console.error(
+      `ASSERT recovery.cross_owner_rejected status=${crossOwnerStatus}`,
     );
   } finally {
     await otherContext.close();
   }
+
+  // G1-A later-over-wins: a recovery proposal whose real response is delayed and
+  // then arrives after a newer controlled remount (new mount generation and
+  // request id) must not commit any recovery state. Real proposal via routing —
+  // no fabricated response.
+  const recoveryStorageKey = `transumin.passenger.recovery.${activated.journey_id}`;
+  await page.evaluate(
+    (key) => localStorage.removeItem(key),
+    recoveryStorageKey,
+  );
+  let releaseProposal;
+  const proposalGate = new Promise((resolve) => {
+    releaseProposal = resolve;
+  });
+  let delayedProposalSeen = false;
+  const proposalPattern = '**/api/passenger/recoveries';
+  const proposalHandler = async (route) => {
+    if (route.request().method() !== 'POST' || delayedProposalSeen)
+      return route.continue();
+    delayedProposalSeen = true;
+    const response = await route.fetch();
+    await proposalGate;
+    try {
+      await route.fulfill({ response });
+    } catch {
+      // The remount already dropped the original request; nothing to deliver.
+    }
+  };
+  await page.route(proposalPattern, proposalHandler);
+  await alert.getByRole('button', { name: 'Find another way' }).click();
+  await page
+    .getByRole('button', { name: 'Finding a safe option...' })
+    .waitFor({ timeout: 30000 });
+  await page.reload();
+  await page
+    .getByRole('heading', { name: 'Your active journey' })
+    .waitFor({ timeout: 30000 });
+  await page.waitForTimeout(500);
+  releaseProposal();
+  await page.waitForTimeout(1500);
+  await page.unroute(proposalPattern, proposalHandler);
+  assert.equal(
+    await page.getByRole('heading', { name: 'Recovery option' }).count(),
+    0,
+    'delayed proposal committed recovery state after a newer remount',
+  );
+  assert.equal(
+    await page.evaluate((key) => localStorage.getItem(key), recoveryStorageKey),
+    null,
+    'stale proposal persisted a recovery pointer',
+  );
+  assert.equal(
+    (await readJourney(page, activated.journey_id)).data.accepted_recovery_id,
+    null,
+    'delayed proposal mutated authoritative acceptance',
+  );
+  summary.delayed_proposal_later_over_wins = true;
+  console.error(
+    'ASSERT recovery.delayed_proposal_rejected_after_remount=true mutation=false',
+  );
+
+  // Fresh authoritative proposal after the remount: proves the guard dropped only
+  // the stale response, not the capability.
+  await page
+    .getByRole('region', { name: 'Journey updates' })
+    .getByRole('article', { name: 'Targeted journey alert' })
+    .waitFor({ timeout: 30000 });
+  const freshProposalResponse = page.waitForResponse(
+    (r) => r.url().endsWith('/recoveries') && r.request().method() === 'POST',
+    { timeout: 120000 },
+  );
+  await page
+    .getByRole('region', { name: 'Journey updates' })
+    .getByRole('article', { name: 'Targeted journey alert' })
+    .getByRole('button', { name: 'Find another way' })
+    .click();
+  const freshProposal = await (await freshProposalResponse).json();
+  await page
+    .getByRole('heading', { name: 'Recovery option' })
+    .waitFor({ timeout: 120000 });
+  const acceptedRecoveryId = freshProposal.data?.recovery_id;
+  assert.ok(
+    acceptedRecoveryId,
+    'fresh recovery proposal missing after remount',
+  );
+
+  // G1-A lost-response: the acceptance POST reaches the server (real commit) but
+  // the response is aborted. The client must reconcile from authoritative reads,
+  // must not retry the mutation, and must not fabricate a success state.
+  let acceptancePosts = 0;
+  let acceptRealStatus = null;
+  const acceptPattern = '**/api/passenger/recoveries/*/accept';
+  const acceptHandler = async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    acceptancePosts += 1;
+    const response = await route.fetch();
+    acceptRealStatus = response.status();
+    await route.abort('failed');
+  };
+  await page.route(acceptPattern, acceptHandler);
   await page.getByRole('button', { name: 'Use this repaired route' }).click();
-  await page.getByText(/Recovery accepted/).waitFor({ timeout: 120000 });
+  await page
+    .getByText(/Recovery diterima|Recovery accepted/)
+    .waitFor({ timeout: 120000 });
+  await page.unroute(acceptPattern, acceptHandler);
+  assert.equal(
+    acceptancePosts,
+    1,
+    'lost response must not cause a second acceptance POST',
+  );
+  assert.ok(
+    [200, 201].includes(acceptRealStatus),
+    `real acceptance response status ${String(acceptRealStatus)}`,
+  );
+  summary.lost_acceptance_response_reconciled = true;
+  summary.acceptance_post_count = acceptancePosts;
+  console.error(
+    `ASSERT stale.lost_acceptance_response reconciled=true posts=${acceptancePosts} real_status=${String(acceptRealStatus)}`,
+  );
 
   const after = await attrs(page);
-  const postAccept = await page.evaluate(
-    async (id) => (await fetch(`/api/passenger/journeys/${id}`)).json(),
-    activated.journey_id,
-  );
+  const postAccept = await readJourney(page, activated.journey_id);
   summary.accepted_recovery_id = postAccept.data.accepted_recovery_id;
-  assert.ok(
+  assert.equal(
     summary.accepted_recovery_id,
-    'accepted recovery ID missing after refresh from server',
+    acceptedRecoveryId,
+    'authoritative acceptance pointer disagrees with the reconciled recovery',
   );
   assert.equal(postAccept.data.journey_id, activated.journey_id);
   assert.equal(postAccept.data.progress.completed_segment_count, 1);
@@ -372,12 +593,109 @@ try {
     activeAfterWalkProgress.data.segments.slice(0, 1),
     'recovery changed completed WALK history',
   );
-  assert.ok(after?.scope?.includes(`:${summary.accepted_recovery_id}:1.`));
-  assert.equal(
-    after?.maneuverIndex,
-    '-1',
-    'obsolete maneuver index survived recovery',
-  );
+  // G1-D: the old maneuver index was legitimately initialWalkProgress 0 for the
+  // new remaining WALK; the source truth is the current leg's navigation state.
+  if (!nav || !mapGeometry) {
+    throw new Error('NOT_VERIFIED library imports unavailable');
+  } else {
+    const currentLeg = postAccept.data.segments.find(
+      (segment) =>
+        segment.sequence === postAccept.data.progress.completed_segment_count,
+    );
+    const expectedScope =
+      currentLeg?.mode === 'WALK'
+        ? nav.navigationScopeKey(
+            postAccept.data.journey_id,
+            postAccept.data.accepted_recovery_id,
+            currentLeg,
+          )
+        : 'none';
+    assert.equal(
+      after?.scope,
+      expectedScope,
+      'navigation scope differs from authoritative current WALK',
+    );
+    const prepared =
+      currentLeg?.mode === 'WALK'
+        ? nav.prepareWalkNavigation(currentLeg)
+        : null;
+    const expectedTotal = String(prepared?.maneuvers.length ?? 0);
+    const expectedIndex = String(
+      prepared?.evidence === 'OTP_DERIVED_MANEUVER'
+        ? nav.initialWalkProgress().maneuverIndex
+        : -1,
+    );
+    const completed = postAccept.data.progress.completed_segment_count;
+    assert.equal(
+      after?.total,
+      expectedTotal,
+      'map/navigation maneuver total mismatch',
+    );
+    assert.equal(
+      after?.maneuverIndex,
+      expectedIndex,
+      'stale maneuver index after recovery',
+    );
+    // Timeline: exact per-leg sequence, fingerprint and semantic position versus
+    // the authoritative itinerary. No invented IDs; no coordinate surface.
+    const legDom = await page.evaluate(() =>
+      [...document.querySelectorAll('.leg-list li')].map((li) => ({
+        sequence: li.getAttribute('data-segment-sequence'),
+        fingerprint: li.getAttribute('data-leg-fingerprint'),
+        position: li.className,
+      })),
+    );
+    const expectedTimeline = postAccept.data.segments.map((s) => ({
+      sequence: String(s.sequence),
+      fingerprint: nav.walkGeometryIdentity(s),
+      position:
+        s.sequence < completed
+          ? 'completed'
+          : s.sequence === completed
+            ? 'current'
+            : 'upcoming',
+    }));
+    assert.deepEqual(
+      legDom,
+      expectedTimeline,
+      'rendered timeline order/fingerprint/positions disagree with authoritative segments',
+    );
+    console.error(
+      `ASSERT timeline.sequence_fingerprint exact=true legs=${String(expectedTimeline.length)}`,
+    );
+    // Exact map digest from server geometry: same filter + feature identity +
+    // FNV-1a as journey-map.tsx. Generation must move past the predecessor.
+    const routeSource = await readMapObservability(page);
+    const expectedAccept = expectedMapFingerprint(postAccept.data);
+    assert.ok(routeSource.hasFrame, 'map frame (.map-frame) missing after R1');
+    assert.equal(
+      routeSource.length,
+      expectedAccept.length,
+      'route source count mismatch',
+    );
+    assert.deepEqual(
+      typeof routeSource.fingerprint === 'string'
+        ? routeSource.fingerprint.split('|')
+        : null,
+      expectedAccept,
+      'accepted map digest not exact reproduction of server geometry',
+    );
+    assert.notDeepEqual(
+      routeSource.fingerprint.split('|'),
+      baseExpected,
+      'recovery generation digest identical to predecessor',
+    );
+    assert.ok(
+      !/\d+\.\d+/.test(routeSource.fingerprint),
+      'coordinate-like decimal leaked into the map fingerprint',
+    );
+    summary.route_source_fingerprint_length = expectedAccept.length;
+    summary.expectations_maneuver_index = expectedIndex;
+    summary.expectations_maneuver_total = expectedTotal;
+    console.error(
+      `ASSERT map.accepted_digest exact=true segments=${String(expectedAccept.length)} generation_changed=true`,
+    );
+  }
   summary.current_segment_count = postAccept.data.segments.length;
   summary.new_itinerary_segments = postAccept.data.segments
     .map((s) => s.mode)
@@ -390,20 +708,37 @@ try {
   summary.original_plan_preserved =
     postAccept.data.original_plan.journey_id === summary.original_plan_id;
   assert.ok(summary.original_plan_preserved);
-  console.log(
+  // Predecessor source via existing API field, or explicit unavailability.
+  if (
+    Array.isArray(postAccept.data.original_plan?.segments) &&
+    postAccept.data.original_plan.segments.length > 0
+  ) {
+    summary.original_plan_map_digest = expectedMapFingerprint(
+      postAccept.data.original_plan,
+    ).length;
+    console.error(
+      `ASSERT map.original_plan_digest exact=true segments=${String(summary.original_plan_map_digest)}`,
+    );
+  } else {
+    summary.original_plan_map_digest = 'UNAVAILABLE';
+    console.error(
+      'ASSERT map.original_plan_digest UNAVAILABLE original_plan.geometry_not_exposed',
+    );
+  }
+  console.error(
     `ASSERT recovery.accepted accepted_recovery_id=${summary.accepted_recovery_id} lineage=true original_plan_preserved=true`,
   );
-  console.log(
-    `ASSERT itinerary.revision remaining_legs ${summary.original_segment_count} -> ${summary.current_segment_count} modes=${summary.new_itinerary_segments}`,
+  console.error(
+    `ASSERT itinerary.revision remaining_legs ${String(summary.original_segment_count)} -> ${String(summary.current_segment_count)} modes=${summary.new_itinerary_segments}`,
   );
-  console.log(
+  console.error(
     `ASSERT leg_geometry.rendered=${summary.new_leg_geometry_rendered}`,
   );
   const walkingLegs = postAccept.data.segments.filter((s) => s.mode === 'WALK');
   const walkingWithSteps = walkingLegs.filter(
     (s) => Array.isArray(s.walking_steps) && s.walking_steps.length > 0,
   );
-  console.log(
+  console.error(
     `ASSERT navigation.walking_maneuvers walk_legs=${walkingLegs.length} maneuvers=${walkingWithSteps.length ? 'OTP_DERIVED' : 'SCHEMATIC_GEOMETRY fallback'}`,
   );
   const scopeIdle = after?.scope === 'none' && walkingLegs.length === 0;
@@ -419,13 +754,9 @@ try {
   );
   summary.recovery_acceptance_lineage = true;
   summary.active_itinerary_revision = summary.accepted_recovery_id;
-  summary.walk_navigation_scope_after = after?.scope;
-  summary.walk_navigation_evidence_after = after?.evidence;
-  console.log(
-    `ASSERT navigation.scope_changed old=${before.scope} new=${after.scope} idle_nonwalk=${scopeIdle}`,
-  );
-  console.log(
-    `ASSERT navigation.stale_instruction_invalidated=true new_leg_geometry_rendered=${summary.new_leg_geometry_rendered} evidence=${after.evidence}`,
+  console.error(`ASSERT navigation.scope_changed idle_nonwalk=${scopeIdle}`);
+  console.error(
+    `ASSERT navigation.stale_instruction_invalidated=true new_leg_geometry_rendered=${summary.new_leg_geometry_rendered}`,
   );
 
   await page.reload();

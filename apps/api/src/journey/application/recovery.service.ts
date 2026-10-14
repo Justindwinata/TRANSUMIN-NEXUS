@@ -76,6 +76,10 @@ export class RecoveryService {
       input.activeJourneyId,
       input.ownerRef,
     );
+    // Capture generation before any OTP/state-validation work. Never re-read the
+    // pointer when saving: this token is the proposal's source generation.
+    const baseRecoveryId = journey.acceptedRecoveryId ?? null;
+    const currentPlan = journey.currentPlan ?? journey.originalPlan;
     const impact = await this.repository.getCurrentImpact(
       input.impactId,
       input.activeJourneyId,
@@ -91,8 +95,12 @@ export class RecoveryService {
         'INVALID_RECOVERY_ANCHOR',
         'Recovery time must equal the timestamp of the persisted progress revision.',
       );
-    const anchor = recoveryAnchor(journey);
-    const remaining = journey.originalPlan.legs.slice(
+    const currentJourney: ActiveJourney = {
+      ...journey,
+      originalPlan: currentPlan,
+    };
+    const anchor = recoveryAnchor(currentJourney);
+    const remaining = currentPlan.legs.slice(
       journey.progress.completedLegCount,
     );
     const invalidIndex = remaining.findIndex((leg) =>
@@ -107,7 +115,7 @@ export class RecoveryService {
       );
 
     const preservationStarted = performance.now();
-    const completedLegs = journey.originalPlan.legs.slice(
+    const completedLegs = currentPlan.legs.slice(
       0,
       journey.progress.completedLegCount,
     );
@@ -127,15 +135,15 @@ export class RecoveryService {
     const repairAnchor = point(repairEndpoint, 'repair boundary');
     const recoveryRequest = requestFrom(
       repairAnchor,
-      journey.originalPlan.destination,
+      currentPlan.destination,
       preservedLegs.at(-1)?.endAt ?? input.recoveryAt,
-      journey,
+      currentPlan,
     );
     const baselineRequest = requestFrom(
       anchor.point,
-      journey.originalPlan.destination,
+      currentPlan.destination,
       input.recoveryAt,
-      journey,
+      currentPlan,
     );
     const preservationProcessingMilliseconds =
       performance.now() - preservationStarted;
@@ -179,7 +187,7 @@ export class RecoveryService {
           repairAnchor,
           point(suffixStart.from, 'rejoin boundary'),
           recoveryRequest.departureAt,
-          journey,
+          currentPlan,
         ),
       );
       proposedRouterMilliseconds +=
@@ -229,7 +237,7 @@ export class RecoveryService {
     const baseline = baselineResult?.alternatives[0] ?? null;
     const proposed = repair
       ? mergeRemainingJourney(
-          journey,
+          anchor.point,
           input.recoveryAt,
           preservedLegs,
           repair,
@@ -380,11 +388,12 @@ export class RecoveryService {
     } as const;
     const recoveryId = stableUuid(
       'state-aware-recovery',
-      `${journey.journeyId}:${impact.impactId}:${journey.progress.revision}:${input.recoveryAt}:${input.idempotencyKey}`,
+      `${journey.journeyId}:${impact.impactId}:${baseRecoveryId ?? 'G0'}:${journey.progress.revision}:${input.recoveryAt}:${input.idempotencyKey}`,
     );
     const proposal: RecoveryProposal = {
       recoveryId,
       activeJourneyId: journey.journeyId,
+      baseRecoveryId,
       impactId: impact.impactId,
       ownerRef: journey.ownerRef,
       method: 'STATE_AWARE_REPAIR',
@@ -393,7 +402,7 @@ export class RecoveryService {
       completedLegCount: journey.progress.completedLegCount,
       recoveryAnchor: { name: anchor.endpoint.name, point: anchor.point },
       recoveryAt: input.recoveryAt,
-      networkSnapshotId: journey.originalPlan.routingContext.networkSnapshotId,
+      networkSnapshotId: currentPlan.routingContext.networkSnapshotId,
       mobilityProjectionVersion: impact.projectionVersion,
       originalJourneyFingerprint: selectedJourneyFingerprint(
         journey.originalPlan,
@@ -588,23 +597,21 @@ function requestFrom(
   origin: GeoPoint,
   destination: GeoPoint,
   departureAt: string,
-  journey: ActiveJourney,
+  journey: JourneyAlternative,
 ): JourneyPlanRequest {
   return {
     origin,
     destination,
     departureAt,
-    networkSnapshotId: journey.originalPlan.routingContext.networkSnapshotId,
+    networkSnapshotId: journey.routingContext.networkSnapshotId,
     preference: 'BALANCED',
-    allowedModes: [
-      ...new Set(journey.originalPlan.legs.map((leg) => leg.mode)),
-    ],
+    allowedModes: [...new Set(journey.legs.map((leg) => leg.mode))],
     maximumAlternatives: 1,
   };
 }
 
 function mergeRemainingJourney(
-  journey: ActiveJourney,
+  anchor: GeoPoint,
   recoveryAt: string,
   preserved: readonly JourneyLeg[],
   repaired: JourneyAlternative,
@@ -623,10 +630,7 @@ function mergeRemainingJourney(
       'state-aware-recovery-journey',
       JSON.stringify(legs.map(stableLeg)),
     ),
-    origin: point(
-      journey.originalPlan.legs[journey.progress.completedLegCount]!.from,
-      'recovery anchor',
-    ),
+    origin: anchor,
     startAt: recoveryAt,
     endAt,
     durationSeconds: Math.max(

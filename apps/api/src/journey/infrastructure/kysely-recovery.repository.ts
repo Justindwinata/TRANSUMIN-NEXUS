@@ -40,8 +40,9 @@ export class KyselyRecoveryRepository implements RecoveryRepositoryPort {
     journeyId: string,
     ownerRef: string,
   ): Promise<RecoveryImpact | null> {
+    // Legacy original dependency graph joins the union bound to the live pointer.
     const result = await sql<RecoveryImpact>`
-      select distinct i.id as "impactId", i.journey_id as "journeyId",
+      (select distinct i.id as "impactId", i.journey_id as "journeyId",
         i.mobility_entity_id as "mobilityEntityId",
         i.state_transition_id as "stateTransitionId",
         i.operational_state as "operationalState",
@@ -55,8 +56,30 @@ export class KyselyRecoveryRepository implements RecoveryRepositoryPort {
       join journey.journey_dependency d on d.id=x.dependency_id
       where i.id=${impactId}::uuid and i.journey_id=${journeyId}::uuid
         and p.owner_ref=${ownerRef} and a.lifecycle_status='ACTIVE'
+        and a.accepted_recovery_id is null
         and i.impact_status='BLOCKING' and i.resolved_at is null
-        and d.leg_sequence >= pr.completed_leg_count
+        and (i.expires_at is null or i.expires_at > now())
+        and d.leg_sequence >= pr.completed_leg_count)
+      union all
+      (select distinct i.id as "impactId", i.journey_id as "journeyId",
+        i.mobility_entity_id as "mobilityEntityId",
+        i.state_transition_id as "stateTransitionId",
+        i.operational_state as "operationalState",
+        i.projection_version as "projectionVersion",
+        i.provenance_ref as "provenanceRef"
+      from journey.journey_impact i
+      join journey.journey_plan p on p.id=i.journey_id
+      join journey.active_journey a on a.journey_id=i.journey_id
+      join journey.journey_progress pr on pr.journey_id=i.journey_id
+      join journey.current_impact_dependency x on x.impact_id=i.id
+      join journey.active_journey_dependency d on d.id=x.dependency_id
+      where i.id=${impactId}::uuid and i.journey_id=${journeyId}::uuid
+        and p.owner_ref=${ownerRef} and a.lifecycle_status='ACTIVE'
+        and d.recovery_id=a.accepted_recovery_id
+        and i.impact_status='BLOCKING' and i.resolved_at is null
+        and (i.expires_at is null or i.expires_at > now())
+        and d.leg_sequence >= pr.completed_leg_count)
+      limit 1
     `.execute(this.database);
     return result.rows[0] ?? null;
   }
@@ -107,19 +130,21 @@ export class KyselyRecoveryRepository implements RecoveryRepositoryPort {
       if (inserted.rows[0] === undefined) {
         const existing = await sql<{
           id: string;
-          impactId: string;
-          progressRevision: number;
+          requestMatches: boolean;
         }>`
-          select id, impact_id as "impactId", progress_revision as "progressRevision"
+          select id,
+            impact_id=${proposal.impactId}::uuid
+              and active_journey_id=${proposal.activeJourneyId}::uuid
+              and progress_revision=${proposal.progressRevision}
+              and recovery_at=${proposal.recoveryAt}::timestamptz
+              and coalesce(comparison_json->>'baseRecoveryId', '')=
+                coalesce(${proposal.baseRecoveryId ?? null}, '')
+              as "requestMatches"
           from recovery.recovery_plan
           where owner_ref=${proposal.ownerRef} and idempotency_key=${idempotencyKey}
         `.execute(transaction);
         const row = existing.rows[0];
-        if (
-          row === undefined ||
-          row.impactId !== proposal.impactId ||
-          row.progressRevision !== proposal.progressRevision
-        )
+        if (row === undefined || !row.requestMatches)
           throw new RecoveryError(
             'IDEMPOTENCY_CONFLICT',
             'The idempotency key belongs to different recovery input.',
@@ -177,21 +202,33 @@ export class KyselyRecoveryRepository implements RecoveryRepositoryPort {
       await sql`
         select pg_advisory_xact_lock(hashtext(${`accept:${input.ownerRef}:${input.idempotencyKey}`}))
       `.execute(transaction);
-      const duplicate = await sql<{ acceptance: RecoveryAcceptance }>`
-        select acceptance_json as acceptance
+      const duplicate = await sql<{
+        acceptance: RecoveryAcceptance;
+        payloadMatches: boolean;
+      }>`
+        select acceptance_json as acceptance,
+          accepted_journey_fingerprint=${input.acceptedJourneyFingerprint}
+            and accepted_journey_json=${JSON.stringify(input.acceptedJourney)}::jsonb
+            as "payloadMatches"
         from recovery.recovery_acceptance
         where owner_ref=${input.ownerRef}
           and idempotency_key=${input.idempotencyKey}
         for update
       `.execute(transaction);
-      const recorded = duplicate.rows[0]?.acceptance ?? null;
+      const duplicateRow = duplicate.rows[0];
+      const recorded = duplicateRow?.acceptance ?? null;
       if (recorded !== null) {
         if (recorded.recoveryId !== input.recoveryId)
           throw new RecoveryError(
             'IDEMPOTENCY_CONFLICT',
             'The acceptance idempotency key belongs to a different recovery proposal.',
           );
-        if (recorded.acceptedProgressRevision !== input.progressRevision)
+        if (
+          recorded.acceptedProgressRevision !== input.progressRevision ||
+          recorded.acceptedJourneyFingerprint !==
+            input.acceptedJourneyFingerprint ||
+          duplicateRow?.payloadMatches !== true
+        )
           throw new RecoveryError(
             'IDEMPOTENCY_CONFLICT',
             'The acceptance idempotency key belongs to a different acceptance request.',
@@ -204,16 +241,21 @@ export class KyselyRecoveryRepository implements RecoveryRepositoryPort {
         progressRevision: number;
         projectionVersion: string;
         transitionId: string;
+        baseRecoveryId: string | null;
       }>`
         select owner_ref as "ownerRef", impact_id as "impactId",
           progress_revision as "progressRevision",
           mobility_projection_version as "projectionVersion",
-          state_transition_id as "transitionId"
+          state_transition_id as "transitionId",
+          coalesce(comparison_json->>'baseRecoveryId', null) as "baseRecoveryId"
         from recovery.recovery_plan
         where id=${input.recoveryId}::uuid
         for update
       `.execute(transaction);
       const plan = candidate.rows[0];
+      // Legacy G0 fixtures omit baseRecoveryId; absent means the original
+      // generation, never an unknown.
+      const persistedProposalBase = plan?.baseRecoveryId ?? null;
       if (plan === undefined || plan.ownerRef !== input.ownerRef)
         throw new RecoveryError(
           'RECOVERY_NOT_FOUND',
@@ -236,6 +278,7 @@ export class KyselyRecoveryRepository implements RecoveryRepositoryPort {
         );
       const locked = await sql<{
         lifecycleStatus: string;
+        acceptedRecoveryId: string | null;
         completedLegCount: number;
         revision: number;
         recordedAt: Date;
@@ -245,6 +288,7 @@ export class KyselyRecoveryRepository implements RecoveryRepositoryPort {
         alightingAt: Date | null;
       }>`
         select a.lifecycle_status as "lifecycleStatus",
+          a.accepted_recovery_id as "acceptedRecoveryId",
           pr.completed_leg_count as "completedLegCount",
           pr.revision, pr.recorded_at as "recordedAt",
           pr.boarding_confirmed_leg_sequence as "boardingLeg",
@@ -266,7 +310,8 @@ export class KyselyRecoveryRepository implements RecoveryRepositoryPort {
         journey === undefined ||
         journey.lifecycleStatus !== 'ACTIVE' ||
         journey.revision !== plan.progressRevision ||
-        journey.revision !== input.progressRevision
+        journey.revision !== input.progressRevision ||
+        journey.acceptedRecoveryId !== persistedProposalBase
       )
         throw new RecoveryError(
           'RECOVERY_STALE',
@@ -285,6 +330,7 @@ export class KyselyRecoveryRepository implements RecoveryRepositoryPort {
         from journey.journey_impact i
         where i.id=${plan.impactId}::uuid
           and i.resolved_at is null
+          and (i.expires_at is null or i.expires_at > now())
           and i.impact_status='BLOCKING'
         for update
       `.execute(transaction);
@@ -337,6 +383,7 @@ export class KyselyRecoveryRepository implements RecoveryRepositoryPort {
         `.execute(transaction)
         ).rows[0]!.journeyId,
         ownerRef: plan.ownerRef,
+        predecessorRecoveryId: persistedProposalBase,
         acceptedProgressRevision: input.progressRevision,
         acceptedImpactId: plan.impactId,
         acceptedStateTransitionId: plan.transitionId,

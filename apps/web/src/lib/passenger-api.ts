@@ -65,7 +65,8 @@ export const passengerApi = {
         ...(activatedAt ? { activated_at: activatedAt } : {}),
       }),
     }),
-  getJourney: (id: string) => request<Journey>(`journeys/${id}`),
+  getJourney: (id: string, signal?: AbortSignal) =>
+    request<Journey>(`journeys/${id}`, { signal }),
   progress: (
     id: string,
     completed: number,
@@ -175,18 +176,24 @@ export const passengerApi = {
       reader.releaseLock();
     }
   },
-  getRecovery: (id: string) => request<Recovery>(`recoveries/${id}`),
-  acceptRecovery: (id: string, progressRevision: number, key: string) =>
+  acceptRecovery: (
+    id: string,
+    progressRevision: number,
+    key: string,
+    signal?: AbortSignal,
+  ) =>
     request<RecoveryAcceptance>(`recoveries/${id}/accept`, {
       method: 'POST',
       headers: { 'idempotency-key': key },
       body: JSON.stringify({ progress_revision: progressRevision }),
+      signal,
     }),
   recovery: (
     journeyId: string,
     impactId: string,
     key: string,
     recoveryAt: string,
+    signal?: AbortSignal,
   ) =>
     request<Recovery>('recoveries', {
       method: 'POST',
@@ -196,7 +203,35 @@ export const passengerApi = {
         impact_id: impactId,
         recovery_at: recoveryAt,
       }),
+      signal,
     }),
+  getRecovery: (id: string, signal?: AbortSignal) =>
+    request<Recovery>(`recoveries/${id}`, { signal }),
+  reconcileRecovery: async (
+    journeyId: string,
+    recoveryId: string,
+    signal?: AbortSignal,
+  ) => {
+    // Successive reads, no blind mutation: the stored acceptance is source of
+    // truth, and the matching proposal belongs to that journey pointer.
+    const journey = await request<Journey>(`journeys/${journeyId}`, { signal });
+    if (journey.accepted_recovery_id === recoveryId) {
+      const recovery = await request<Recovery>(`recoveries/${recoveryId}`, {
+        signal,
+      });
+      if (recovery.original_journey_id !== journey.journey_id)
+        throw new PassengerApiError(
+          'RECOVERY_MISMATCH',
+          'Recovery belongs to a different journey.',
+          409,
+        );
+      return { journey, recovery };
+    }
+    return {
+      journey,
+      recovery: await request<Recovery>(`recoveries/${recoveryId}`, { signal }),
+    };
+  },
   submitReport: (
     input: {
       active_journey_id: string | null;
@@ -220,3 +255,80 @@ export const passengerApi = {
   getReport: (id: string) =>
     request<PassengerReport>(`passenger-reports/${id}`),
 };
+
+// G1-A identity guards. Pure and deterministic so they are unit-testable
+// without a DOM: request ids are monotonic per client, and journey identity
+// is (journey_id, progress.revision, accepted_recovery_id). A recovery POST
+// does not advance progress.revision, so accepted_recovery_id is required to
+// tell a fresh proposal apart from one already accepted.
+export type RecoverySource = {
+  journeyId: string;
+  revision: number;
+  acceptedRecoveryId: string | null;
+};
+
+export function recoverySource(
+  journey: Pick<Journey, 'journey_id' | 'accepted_recovery_id' | 'progress'>,
+): RecoverySource {
+  return {
+    journeyId: journey.journey_id,
+    revision: journey.progress?.revision ?? 0,
+    acceptedRecoveryId: journey.accepted_recovery_id ?? null,
+  };
+}
+
+export function sameRecoverySource(
+  a: RecoverySource,
+  b: RecoverySource,
+): boolean {
+  return (
+    a.journeyId === b.journeyId &&
+    a.revision === b.revision &&
+    a.acceptedRecoveryId === b.acceptedRecoveryId
+  );
+}
+
+// Commit guard for proposal/acceptance: the response may only be applied when
+// it is still the newest request, the journey generation is unchanged, and the
+// live journey still matches the source captured before the request went out.
+export function canCommitRecovery(input: {
+  requestId: number;
+  latestRequestId: number;
+  generation: number;
+  latestGeneration: number;
+  captured: RecoverySource;
+  latest: RecoverySource | null;
+}): boolean {
+  return (
+    input.requestId === input.latestRequestId &&
+    input.generation === input.latestGeneration &&
+    input.latest !== null &&
+    sameRecoverySource(input.captured, input.latest)
+  );
+}
+
+// Idempotency key: progress revision alone is not enough because accepting a
+// recovery leaves revision unchanged, so the accepted recovery pointer (or
+// the G0 sentinel for the original plan) scopes the key.
+export function recoveryProposalKey(input: {
+  journeyId: string;
+  impactId: string;
+  revision: number;
+  acceptedRecoveryId: string | null;
+}): string {
+  return `passenger:${input.journeyId}:${input.impactId}:${input.revision}:${input.acceptedRecoveryId ?? 'G0'}`;
+}
+
+// After an uncertain acceptance POST, reconcile from an authoritative journey
+// read instead of assuming failure. APPLIED means the source of truth already
+// points at this recovery; NOT_APPLIED means a safe idempotent retry; UNKNOWN
+// means the read itself did not resolve.
+export function acceptanceReconcileOutcome(input: {
+  journey: { accepted_recovery_id?: string | null } | null;
+  recoveryId: string;
+}): 'APPLIED' | 'NOT_APPLIED' | 'UNKNOWN' {
+  if (!input.journey) return 'UNKNOWN';
+  return input.journey.accepted_recovery_id === input.recoveryId
+    ? 'APPLIED'
+    : 'NOT_APPLIED';
+}

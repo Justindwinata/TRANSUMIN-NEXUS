@@ -221,6 +221,7 @@ async function main(): Promise<void> {
         const env: NodeJS.ProcessEnv = {
           ...process.env,
           DATABASE_URL: `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${database}`,
+          POSTGRES_DB: database,
         };
         delete env.NODE_TEST_CONTEXT;
         console.log(JSON.stringify({ spec, database, status: 'RUNNING' }));

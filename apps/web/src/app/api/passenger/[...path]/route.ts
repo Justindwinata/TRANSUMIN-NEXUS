@@ -23,15 +23,36 @@ function sessionSecret(): string | null {
 }
 
 /** ponytail: prototype session identity, not production authentication. */
-function sign(owner: string, secret: string): string {
-  return createHmac('sha256', secret).update(owner).digest('base64url');
+function sign(owner: string, expiresAt: number, secret: string): string {
+  return createHmac('sha256', secret)
+    .update(`${owner}.${expiresAt}`)
+    .digest('base64url');
 }
 
-function verify(token: string, owner: string, secret: string): boolean {
-  const expected = sign(owner, secret);
+function verify(
+  token: string,
+  owner: string,
+  expiresAtText: string,
+  secret: string,
+): boolean {
+  if (!/^[0-9]{1,12}$/.test(expiresAtText)) return false;
+  const expiresAt = Number(expiresAtText);
+  const now = Math.floor(Date.now() / 1000);
+  if (
+    !Number.isSafeInteger(expiresAt) ||
+    expiresAt <= now ||
+    expiresAt > now + SESSION_TTL_SECONDS
+  )
+    return false;
+  const expected = sign(owner, expiresAt, secret);
   const a = Buffer.from(expected);
   const b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function sessionValue(owner: string, secret: string): string {
+  const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+  return `${owner}.${expiresAt}.${sign(owner, expiresAt, secret)}`;
 }
 
 /**
@@ -49,17 +70,16 @@ function ownerFor(
 ): { owner: string; mintNew: boolean } {
   const cookieValue = request.cookies.get(SESSION_COOKIE)?.value;
   if (cookieValue) {
-    const separator = cookieValue.lastIndexOf('.');
+    const parts = cookieValue.split('.');
+    const owner = parts[0] ?? '';
+    const expiresAt = parts[1] ?? '';
+    const signature = parts[2] ?? '';
     if (
-      separator > 0 &&
-      verify(
-        cookieValue.slice(separator + 1),
-        cookieValue.slice(0, separator),
-        secret,
-      ) &&
-      OWNER_PATTERN.test(cookieValue.slice(0, separator))
+      parts.length === 3 &&
+      verify(signature, owner, expiresAt, secret) &&
+      OWNER_PATTERN.test(owner)
     )
-      return { owner: cookieValue.slice(0, separator), mintNew: false };
+      return { owner, mintNew: false };
     return { owner: '', mintNew: false }; // invalid cookie: refuse
   }
   return { owner: `passenger:${randomUUID()}`, mintNew: true };
@@ -213,17 +233,13 @@ async function forward(request: NextRequest, context: Context) {
         },
       });
       if (mintNew)
-        streamed.cookies.set(
-          SESSION_COOKIE,
-          `${owner}.${sign(owner, secret)}`,
-          {
-            httpOnly: true,
-            secure,
-            sameSite: 'strict',
-            path: '/',
-            maxAge: SESSION_TTL_SECONDS,
-          },
-        );
+        streamed.cookies.set(SESSION_COOKIE, sessionValue(owner, secret), {
+          httpOnly: true,
+          secure,
+          sameSite: 'strict',
+          path: '/',
+          maxAge: SESSION_TTL_SECONDS,
+        });
       return streamed;
     }
     const responseHeaders = {
@@ -236,7 +252,7 @@ async function forward(request: NextRequest, context: Context) {
       headers: responseHeaders,
     });
     if (mintNew)
-      result.cookies.set(SESSION_COOKIE, `${owner}.${sign(owner, secret)}`, {
+      result.cookies.set(SESSION_COOKIE, sessionValue(owner, secret), {
         httpOnly: true,
         secure,
         sameSite: 'strict',

@@ -51,6 +51,8 @@ export type RecoveryMethodMetrics = Readonly<{
 export type RecoveryProposal = Readonly<{
   recoveryId: string;
   activeJourneyId: string;
+  /** Pointer generation observed before routing/OTP work; null means original G0. */
+  baseRecoveryId?: string | null;
   impactId: string;
   ownerRef: string;
   method: 'STATE_AWARE_REPAIR';
@@ -88,6 +90,12 @@ export type RecoveryAcceptance = Readonly<{
   recoveryId: string;
   activeJourneyId: string;
   ownerRef: string;
+  /**
+   * Durable generation chain: the accepted recovery this acceptance superseded
+   * (the active pointer value at accept time). null links back to G0/original.
+   * Immutable; never rewritten by later acceptances.
+   */
+  predecessorRecoveryId: string | null;
   acceptedProgressRevision: number;
   acceptedImpactId: string;
   acceptedStateTransitionId: string;

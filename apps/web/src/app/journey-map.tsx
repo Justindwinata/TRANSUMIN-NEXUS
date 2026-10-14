@@ -14,6 +14,7 @@ import {
   isValidDevicePosition,
   mapGeometryPoints,
 } from '../lib/map-geometry';
+import { shortHash } from '../lib/navigation';
 import type { DevicePosition, MapCoordinate } from '../lib/map-geometry';
 import type { Journey, JourneySegment } from '../lib/passenger';
 
@@ -209,6 +210,9 @@ export function JourneyMap({
       })),
     [journey?.segments],
   );
+  const generation =
+    (journey as { accepted_recovery_id?: string | null } | null)
+      ?.accepted_recovery_id ?? 'ORIGINAL';
   const renderableSegments = useMemo(
     () => segments.filter((segment) => segment.points.length >= 2),
     [segments],
@@ -295,6 +299,7 @@ export function JourneyMap({
         'data-route-source-count',
         String(renderableSegments.length),
       );
+      const fingerprint: string[] = [];
       mapNode.current?.setAttribute(
         'data-route-point-count',
         String(
@@ -309,12 +314,13 @@ export function JourneyMap({
         String(markers.length),
       );
       for (const segment of renderableSegments) {
-        const id = `journey-${journey!.journey_id}-segment-${segment.sequence}`;
+        const id = `journey-${journey!.journey_id}-${generation}-segment-${segment.sequence}`;
         map.addSource(id, {
           type: 'geojson',
           data: {
             type: 'Feature',
-            properties: {},
+            id: segment.sequence,
+            properties: { sequence: segment.sequence, mode: segment.mode },
             geometry: { type: 'LineString', coordinates: segment.points },
           },
         });
@@ -332,7 +338,16 @@ export function JourneyMap({
           },
           layout: { 'line-cap': 'round', 'line-join': 'round' },
         });
+        const serialized = map.getSource(id)?.serialize() as
+          { data?: unknown } | undefined;
+        fingerprint.push(
+          `${journey!.journey_id}:${generation}:${id}:${shortHash(JSON.stringify(serialized?.data ?? null))}`,
+        );
       }
+      mapNode.current?.setAttribute(
+        'data-route-source-fingerprint',
+        fingerprint.join('|'),
+      );
       for (const marker of markers) {
         const element = document.createElement('div');
         element.className = `maplibre-marker map-marker ${marker.kind}`;
@@ -434,7 +449,7 @@ export function JourneyMap({
     const map = mapRef.current;
     if (!map || !mapReady || !journey) return;
     for (const segment of renderableSegments) {
-      const id = `journey-${journey.journey_id}-segment-${segment.sequence}`;
+      const id = `journey-${journey.journey_id}-${generation}-segment-${segment.sequence}`;
       if (!map.getLayer(id)) continue;
       const status =
         activeSegmentSequence === null
