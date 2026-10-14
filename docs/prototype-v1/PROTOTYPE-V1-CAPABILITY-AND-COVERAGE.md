@@ -2,6 +2,17 @@
 
 Date: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. R3 executed exact V20/S14 browser evidence and S09 negative-scenario attempt; R2 results remain valid because application runtime source is unchanged. This checkpoint records executed evidence only. Status values are exact: `PASS`, `FAIL`, `BLOCKED_BY_DATA`, `BLOCKED_BY_AUTHORIZATION`, `BLOCKED_BY_ENVIRONMENT`, `NOT_RUN`, `NOT_VERIFIED`.
 
+## R5 G0–G5 checkpoint update (2026-10-14, commits `06fa181` → `31772e2`)
+
+- **G1 recovery strictness — `PASS` on the executed subset.** Row updates from this checkpoint:
+  - New executed evidence: concurrent competing recovery single-winner, sequential R1/R2/R3 predecessor chain, stale G0/revision tokens, **expired** impact proposal, resolved-impact proposal, blocked candidate, foreign owner, idempotent replay (Tier A isolated 12/12, `data:lightweight-acceptance` exit 0, `DROP_SUCCESS`).
+  - New browser evidence (isolated `pnpm data:cp3:recovery` exit 0): completed WALK history immutable; delayed proposal rejected after remount without mutation; lost acceptance response reconciled from authoritative server read with exactly one POST; exact map digest and timeline sequence/fingerprint parity across generations; signed-session guards (TTL, tampered expiry, old format, owner change) 11/11.
+  - Full G1 edge matrix (transit-completed recovery variants, schematic-only fallback, malformed `walking_steps`, post-rotation session expiry on the browser path, two-recovery browser corridor): `NOT_VERIFIED`.
+- **G2 preferences — `PASS` on executed corridors.** All four preferences verified against real OTP candidates: FASTEST duration, LEAST_WALKING walking, FEWEST_TRANSFERS transfers, BALANCED exact 0.5/0.3/0.2 min-max recomputation with winner = argmin; rapid switching lands on FASTEST; identical repeat request returns identical ranking (`.release-evidence/G2/preferences-browser.log`, exit 0). No diversity was manufactured; winners honestly recorded (`distinct_winners: 2`). V03 stays `PASS` with this stronger evidence.
+- **G4 handoff — `PASS` at LEVEL 0/1 scope only.** Official provider homepages (HTTPS, static host, no query/redirect path, `noopener noreferrer`) plus explicit click-gated trip-context copy; coordinates never render in the DOM (`r4-f06-handoff.log` exit 0). **V16/S12 remain `BLOCKED_BY_DATA`** — homepage copy/handoff is not provider verification; no availability/fare/booking/deep-link claim.
+- **G3 — unchanged.** Typed address `BLOCKED_BY_AUTHORIZATION`; pin fallback, invalid-coordinate rejection, and incident report/review UX verified (`r4-f01-f02.log`, `r4-f05-report.log`).
+- **G5 — V20/S14 rerun `PASS` (20/20, exit 0) and M7 20/20, exit 0** on the final tree (`31772e2`), including acceptance lineage with original plan preserved and accepted map/timeline parity after reload.
+
 ## R5 CP2 navigation update (2026-10-14)
 
 - **F-04 walking maneuver subfeature — `PASS` (browser, subfeature scope).** `pnpm data:cp2:isolated-browser` exit 0 (`.release-evidence/CP2/isolated-browser-fixed.log`): real historical OTP walk leg (4 maneuvers, 22 geometry coordinates), explicitly `SIMULATED` geolocation, invocation-owned thin canonical scratch DB, verified identity and post-stop `DROP_SUCCESS`. Asserts next-instruction rendering, along-route progression after two reliable fixes, low-accuracy hold, pause/resume, manual advance, sustained off-route, and refresh reference reset with no GPS persistence.

@@ -1,6 +1,23 @@
 # Product V1 delivery board
 
-Updated: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. G1 browser subset verified locally; full G1 edge-case matrix remains `NOT_VERIFIED`; publication pending commit/push.
+Updated: 2026-10-14. Classification: `PROTOTYPE_V1_PARTIAL`. G0–G5 checkpoint all committed and pushed on branch `prototype-v1` (HEAD `31772e2ddc0ba7815e20a4bc9babab56cd14c922`); full G1 edge-case matrix and hardware GPS remain `NOT_VERIFIED`.
+
+## R5 G0–G5 final checkpoint (2026-10-14)
+
+All evidence executed against the real product runtime (API 3001, web proxy 3000, OTP 2.10.0) or invocation-owned scratch DBs; product DB 5435 untouched by harnesses.
+
+- **G1 recovery concurrency/identity/expiry — `PASS` (executed subset).** Commits `06fa181` and `a40c19b`:
+  - Backend: generation lineage (`baseRecoveryId`/`predecessorRecoveryId`), atomic `accept()` with revision + pointer guards (no `COALESCE`), impact-union for G0/current generation.
+  - Tier A isolated acceptance suite: 12/12 including concurrent single-winner, sequential R1/R2/R3 predecessor chain, stale G0/revision, resolved **and expired** impact, blocked candidate, foreign owner, idempotent replay (`pnpm --filter @transum-in/api data:lightweight-acceptance`, exit 0, scratch `DROP_SUCCESS`).
+  - Browser (isolated `pnpm data:cp3:recovery`, exit 0, scratch `DROP_SUCCESS`): completed WALK history immutable, report → `CONTROLLED_VERIFIED (SIMULATED)`, targeted alert isolation, cross-owner `404`, R1 accept lineage, exact map digest + timeline sequence/fingerprint parity, delayed proposal rejected after remount (no mutation), lost acceptance response reconciled from authoritative server state with exactly one POST, refresh + completion persistence.
+  - Session security: signed `owner.expiry.HMAC` (TTL bound, timing-safe, fail-closed before upstream fetch) — 11/11 combined guard/session tests exit 0.
+  - Remaining G1: full edge matrix (different remaining-leg structures, schematic-only fallback, malformed `walking_steps`, session expiry after rotation on the browser path) `NOT_VERIFIED`; two-recovery (R2) browser corridor `NOT_VERIFIED`.
+- **G2 GPS + preferences — `PASS` (executed subset).** `a40c19b`: web unit 40/40; GPS lifecycle browser PASS (default OFF, tiers, opt-out, denied/unsupported, no auto permission after reload, no location persistence); preference proof (`.release-evidence/G2/preferences-browser.log` exit 0) — real OTP plan × all four preferences against documented metrics (BALANCED 0.5/0.3/0.2 min-max, winner = argmin), rapid switching, deterministic repeat. Hardware GPS `NOT_VERIFIED` (`docs/delivery/GPS-DEVICE-FIELD-CHECK.md`).
+- **G3 address/incident UX — unchanged: typed address `BLOCKED_BY_AUTHORIZATION`** (`docs/delivery/G3-GEOCODING-AUTHORIZATION-REQUEST.md`); pin/coordinate/stop/current-location fallback verified in `r4-f01-f02` (invalid coordinate rejection, no-result cues, coords never rendered). Incident report/review/resolve UX verified by F-05 m5 22/22 and the r1 workflow.
+- **G4 external handoff — `PASS` at LEVEL 0/1.** Commit `31772e2`: official homepage links only (HTTPS, `noopener noreferrer`, static hosts, no query/redirect path) plus explicit "Salin tujuan" trip-context copy; coordinates reach the clipboard only on user action and never render in the DOM (`r4-f06-handoff.log` exit 0). No provider API/deep link, no booking claim; full provider integration stays `BLOCKED_BY_DATA`/auth.
+- **G5 integrated acceptance — `PASS` (executed subset).** Commit `31772e2`: exact 20-step V20/S14 workflow `node apps/web/scripts/passenger-r1-full-workflow.mjs` 20/20 exit 0 (recovery lineage, accepted map/timeline parity after reload, second-context isolation, controlled close); integrated M7 `passenger-integrated-m7-acceptance.mjs` 20/20 exit 0. `pnpm check` exit 0; `pnpm security:scan` PASS (369 tracked, 13 client; ignored Turbopack dev cache matches excluded). Bahasa Indonesia release report: `docs/prototype-v1/LAPORAN-RILIS-PROTOTYPE-V1.md`.
+
+Gates rerun this checkpoint: API+web typecheck/build, lint/format/contracts/OpenAPI (`pnpm check` 0), 9-suite standard integration 9 suites / 31 tests PASS, web 40/40, API 109/109 earlier this series, source-only secret scan PASS.
 
 ## Provenance
 
