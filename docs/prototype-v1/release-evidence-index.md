@@ -2,6 +2,13 @@
 
 Status: sanitized publication index. No raw/protected data, credentials, or temporary logs archived.
 
+## R6 realization checkpoint (2026-10-14, branch `prototype-v1`)
+
+- Tested code SHA: `c921fb895154c712de0dbd52c526b6741187e1db` (R6 code + tests + harness + docs delta; no application behavior change). Preflight R6 SHA: `b46de42` (docs-only). Push without force; repo verified PRIVATE.
+- Source package (local, git-ignored `.release-evidence/source-release/`): `transum-in-nexus-source-c921fb895154.zip`, 949,529 bytes, 376 tracked files, allowlist match, exact-value secret scan PASS, SHA-256 `1f117c315da05b6d47f570172bc6c0d90056e86b04ae2626757db62c352512c2`. Source-only: no `.env`, caches, data, logs, or runtime state.
+- Executed R6 evidence (local logs, not archived): fresh 20/20 R1 walkthrough; mobile 390×844 smoke (no overflow/errors/failed requests); Tier A 12/12; standard integration 9/31; multi-OD 11 corridors; G2/GPS/F04/M5/M6-fixed/M7/handoff; CP2 + CP3-rerun `DROP_SUCCESS`; `pnpm check` exit 0; `pnpm security:scan` PASS. One CP3 run failed HTTP 500 at second-context activation; scratch retained, root cause `NOT_VERIFIED`. Earlier failed-run scratch DBs follow the same fail-closed retention rule and are never auto-dropped.
+- Remaining `NOT_VERIFIED`: physical GPS, browser R2 corridor, browser expired-session path, S09 live `NO_PATH`/`NO_VALID_ALTERNATIVE`. Blockers unchanged: typed address auth, named POI data, pedestrian validation, provider integration, Tier B environment.
+
 ## R5 G0–G5 checkpoint (2026-10-14, branch `prototype-v1`)
 
 - Tested G5 code SHA: `31772e2ddc0ba7815e20a4bc9babab56cd14c922`. Documentation/release checkpoint SHA: `b46de42306960d8b6876243833089f6eb3b67d7a` (four documents only; identical executable code). Preflight R6 local = remote `refs/heads/prototype-v1`. Historical tests are not relabeled as executed at the documentation SHA. Repository stays PRIVATE; no force-push or history rewrite.
