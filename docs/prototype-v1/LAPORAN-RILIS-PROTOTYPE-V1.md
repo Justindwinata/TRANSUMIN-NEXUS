@@ -7,7 +7,8 @@ Tanggal: 2026-10-14. Klasifikasi: `PROTOTYPE_V1_PARTIAL`. Semua status memakai n
 - Branch: `prototype-v1` (PRIVATE) di `https://github.com/Justindwinata/TRANSUMIN-NEXUS.git`.
 - SHA kode checkpoint G5: `31772e2ddc0ba7815e20a4bc9babab56cd14c922`; bukan SHA rilis dokumentasi.
 - SHA rilis dokumentasi R5, lokal = remote saat preflight R6: `b46de42306960d8b6876243833089f6eb3b67d7a`. Commit ini hanya mengubah empat dokumen, tanpa kode executable. Hasil uji sebelumnya tidak diklaim dijalankan pada SHA ini.
-- SHA rilis final R6: `NOT_VERIFIED` sampai commit, push, dan verifikasi remote selesai.
+- SHA final R6, lokal = remote: `c921fb895154c712de0dbd52c526b6741187e1db`; commit/push tanpa force, repo diverifikasi PRIVATE.
+- ZIP source di `/Users/justindwinata/Developer/TRANSUMIN-NEXUS-PRODUCT/.release-evidence/source-release/transum-in-nexus-source-c921fb895154.zip`, SHA-256 `1f117c315da05b6d47f570172bc6c0d90056e86b04ae2626757db62c352512c2`; 376 file tracked, allowlist dan secret scan PASS. Arsip mengikuti commit sebelum metadata final ini; source code sama, dokumen laporan dapat bertambah setelah commit.
 - Commit checkpoint ini: `06fa181` (G1 lineage/guard), `a40c19b` (pengerasan G1/G2 + bukti F-03), `31772e2` (G4 LEVEL 1 + rerun terintegrasi G5).
 - Pohon kerja bersih setelah push. Tanpa force-push, tanpa tulis ulang riwayat, tanpa penghapusan destruktif.
 - Runtime uji: API `127.0.0.1:3001`, proxy web `127.0.0.1:3000`, OTP `2.10.0` `127.0.0.1:8080`, snapshot `43fb9a29-0c89-5c72-8826-e3dc2adcfb1f`, tanggal layanan `2026-10-02`, zona `Asia/Jakarta`.
