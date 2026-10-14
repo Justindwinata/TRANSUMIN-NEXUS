@@ -560,7 +560,7 @@ try {
   await page.route(acceptPattern, acceptHandler);
   await page.getByRole('button', { name: 'Use this repaired route' }).click();
   await page
-    .getByText(/Recovery diterima|Recovery accepted/)
+    .getByText('Recovery diterima. Rute aktif mengikuti rute pengganti.')
     .waitFor({ timeout: 120000 });
   await page.unroute(acceptPattern, acceptHandler);
   assert.equal(
@@ -667,26 +667,43 @@ try {
     // FNV-1a as journey-map.tsx. Generation must move past the predecessor.
     const routeSource = await readMapObservability(page);
     const expectedAccept = expectedMapFingerprint(postAccept.data);
-    assert.ok(routeSource.hasFrame, 'map frame (.map-frame) missing after R1');
+    // The map source effect applies asynchronously after the recovered journey
+    // lands; wait for the exact expected source count before asserting so the
+    // check is about parity, not about render timing.
+    await page
+      .waitForFunction(
+        (expected) =>
+          Number(
+            (
+              document.querySelector('.map-frame') ??
+              document.querySelector('.maplibre-frame')
+            )?.getAttribute('data-route-source-count'),
+          ) === expected,
+        expectedAccept.length,
+        { timeout: 15000 },
+      )
+      .catch(() => undefined);
+    const settled = await readMapObservability(page);
+    assert.ok(settled.hasFrame, 'map frame (.map-frame) missing after R1');
     assert.equal(
-      routeSource.length,
+      settled.length,
       expectedAccept.length,
       'route source count mismatch',
     );
     assert.deepEqual(
-      typeof routeSource.fingerprint === 'string'
-        ? routeSource.fingerprint.split('|')
+      typeof settled.fingerprint === 'string'
+        ? settled.fingerprint.split('|')
         : null,
       expectedAccept,
       'accepted map digest not exact reproduction of server geometry',
     );
     assert.notDeepEqual(
-      routeSource.fingerprint.split('|'),
+      settled.fingerprint.split('|'),
       baseExpected,
       'recovery generation digest identical to predecessor',
     );
     assert.ok(
-      !/\d+\.\d+/.test(routeSource.fingerprint),
+      !/\d+\.\d+/.test(settled.fingerprint),
       'coordinate-like decimal leaked into the map fingerprint',
     );
     summary.route_source_fingerprint_length = expectedAccept.length;
