@@ -8,6 +8,11 @@ export type JourneyProgress = Readonly<{
   method: 'CONTROLLED_MANUAL';
   recordedAt: string;
   revision: number;
+  /** Explicit passenger confirmation only. Never derived from device GPS. */
+  boardingConfirmedLegSequence: number | null;
+  boardingConfirmedAt: string | null;
+  alightingConfirmedLegSequence: number | null;
+  alightingConfirmedAt: string | null;
 }>;
 
 export type JourneyDependency = Readonly<{
@@ -27,6 +32,10 @@ export type ActiveJourney = Readonly<{
   lifecycleStatus: ActiveJourneyLifecycle;
   planFingerprint: string;
   originalPlan: JourneyAlternative;
+  /** Current route; after acceptance combines immutable completed history and rebased accepted suffix. */
+  currentPlan?: JourneyAlternative;
+  acceptedRecoveryId?: string | null;
+  acceptedBeforeLegCount?: number | null;
   activatedAt: string;
   completedAt: string | null;
   progress: JourneyProgress;
@@ -63,7 +72,9 @@ export class ActiveJourneyError extends Error {
       | 'OWNER_SCOPE_MISMATCH'
       | 'ACTIVATION_CONFLICT'
       | 'INVALID_PROGRESS'
-      | 'JOURNEY_NOT_ACTIVE',
+      | 'INVALID_BOARDING'
+      | 'JOURNEY_NOT_ACTIVE'
+      | 'STALE_ROUTE',
     message: string,
   ) {
     super(message);

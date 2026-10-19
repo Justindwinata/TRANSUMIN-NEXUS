@@ -14,6 +14,7 @@ import {
 import type { IncidentEvidenceInput } from '../operational-data/domain/hazard-incident.js';
 import { createDatabase } from '../infrastructure/database/database.client.js';
 import { migrateToLatest } from '../infrastructure/database/database.migrator.js';
+import { assertInvocationScratchDatabase } from '../infrastructure/database/scratch.guard.js';
 import { KyselyMobilityStateRepository } from '../mobility-twin/infrastructure/kysely-mobility-state.repository.js';
 
 const sourceId = '91000000-0000-4000-8000-000000000001';
@@ -39,17 +40,6 @@ const lifecycle = new KyselyIncidentLifecycleRepository(
   mobility,
   bus,
 );
-
-const FIXTURE_INCIDENTS = [
-  unverifiedId,
-  incidentId2,
-  unknownCloseId,
-  blockerBId,
-  blockerCId,
-  '90000000-0000-4000-8000-000000000099',
-  '91000000-0000-4000-8000-000000000040',
-  '91000000-0000-4000-8000-000000000041',
-] as const;
 
 function evidence(
   incident: string,
@@ -82,67 +72,13 @@ function evidence(
 
 let hazardEventId: string | null = null;
 
-async function clearFixture(): Promise<void> {
-  const incidentIds = sql.join(
-    FIXTURE_INCIDENTS.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
-  await database.transaction().execute(async (transaction) => {
-    await sql`delete from twin.mobility_state_history where mobility_entity_id in (${routeId}::uuid, ${stopId}::uuid, ${stationId}::uuid)`.execute(
-      transaction,
-    );
-    await sql`delete from twin.mobility_state where mobility_entity_id in (${routeId}::uuid, ${stopId}::uuid, ${stationId}::uuid)`.execute(
-      transaction,
-    );
-    await sql`alter table disruption.operational_incident_journal disable trigger operational_incident_journal_append_only`.execute(
-      transaction,
-    );
-    await sql`delete from disruption.operational_incident_journal where incident_id in (${incidentIds})`.execute(
-      transaction,
-    );
-    await sql`alter table disruption.operational_incident_journal enable trigger operational_incident_journal_append_only`.execute(
-      transaction,
-    );
-    await sql`delete from disruption.operational_incident_entity where incident_id in (${incidentIds})`.execute(
-      transaction,
-    );
-    await sql`delete from disruption.operational_incident where id in (${incidentIds})`.execute(
-      transaction,
-    );
-    await sql`alter table twin.operational_observation disable trigger operational_observation_append_only`.execute(
-      transaction,
-    );
-    await sql`delete from twin.operational_observation where incident_id in (${incidentIds})`.execute(
-      transaction,
-    );
-    await sql`alter table twin.operational_observation enable trigger operational_observation_append_only`.execute(
-      transaction,
-    );
-  });
-  if (hazardEventId !== null) {
-    await sql`delete from disruption.entity_impact where impact_analysis_id in (select id from disruption.impact_analysis where disruption_event_id=${hazardEventId}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from disruption.impact_analysis where disruption_event_id=${hazardEventId}::uuid`.execute(
-      database,
-    );
-    await sql`delete from disruption.operational_incident_journal where hazard_event_id=${hazardEventId}::uuid`.execute(
-      database,
-    );
-    await sql`delete from disruption.event where id=${hazardEventId}::uuid`.execute(
-      database,
-    );
-    hazardEventId = null;
-  }
-}
-
 describe('X1-A hazard-incident lifecycle and Twin projection', () => {
   const now = new Date('2026-10-07T03:00:00.000Z');
   const future = new Date('2026-10-07T06:00:00.000Z');
 
   before(async () => {
+    await assertInvocationScratchDatabase(database);
     await migrateToLatest(database);
-    await clearFixture();
     await sql`
       insert into meta.dataset_source (id, source_key, name, provider, source_type, verification_status)
       values (${sourceId}::uuid, 'x1a-fixture', 'X1-A fixture', 'TEST', 'CONTROLLED_REPLAY', 'VERIFIED')
@@ -163,16 +99,6 @@ describe('X1-A hazard-incident lifecycle and Twin projection', () => {
   });
 
   after(async () => {
-    await clearFixture();
-    await sql`delete from twin.mobility_entity where id in (${routeId}::uuid, ${stopId}::uuid, ${stationId}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from meta.dataset_version where id=${versionId}::uuid`.execute(
-      database,
-    );
-    await sql`delete from meta.dataset_source where id=${sourceId}::uuid`.execute(
-      database,
-    );
     await database.destroy();
   });
 
@@ -202,6 +128,7 @@ describe('X1-A hazard-incident lifecycle and Twin projection', () => {
       rawReference: 'fixture:x1a:hazard',
     });
     hazardEventId = hazard.eventId;
+    assert.ok(hazardEventId !== null);
     assert.equal(hazard.operationalState, 'UNKNOWN');
 
     const unverified = await lifecycle.ingest(

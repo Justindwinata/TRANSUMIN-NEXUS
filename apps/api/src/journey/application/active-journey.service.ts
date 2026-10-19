@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { Inject, Injectable } from '@nestjs/common';
 
@@ -27,20 +27,39 @@ export class ActiveJourneyService {
     ownerRef: string;
     selectedJourney: JourneyAlternative;
     activatedAt?: string;
+    idempotencyKey?: string;
   }): Promise<ActiveJourney> {
     assertOwnerRef(input.ownerRef);
     assertCanonicalStateBindings(input.selectedJourney.legs);
     const activatedAt = input.activatedAt ?? new Date().toISOString();
     assertIsoDate(activatedAt, 'activatedAt');
-    const journeyId = activeJourneyInstanceId(
-      input.ownerRef,
-      input.selectedJourney.journeyId,
-    );
+    if (
+      input.idempotencyKey !== undefined &&
+      !/^[A-Za-z0-9._:-]{8,128}$/.test(input.idempotencyKey)
+    )
+      throw new ActiveJourneyError(
+        'ACTIVATION_CONFLICT',
+        'Invalid activation idempotency key.',
+      );
+    const journeyId = input.idempotencyKey
+      ? randomUUID()
+      : activeJourneyInstanceId(
+          input.ownerRef,
+          input.selectedJourney.journeyId,
+        );
     return this.repository.activate({
       journeyId,
       ownerRef: input.ownerRef,
       selectedJourney: input.selectedJourney,
       planFingerprint: selectedJourneyFingerprint(input.selectedJourney),
+      ...(input.idempotencyKey
+        ? {
+            idempotencyKey: input.idempotencyKey,
+            requestFingerprint: productActivationFingerprint(
+              input.selectedJourney,
+            ),
+          }
+        : {}),
       dependencies: extractJourneyDependencies(input.selectedJourney).map(
         (dependency) => ({ ...dependency, journeyId }),
       ),
@@ -59,6 +78,7 @@ export class ActiveJourneyService {
     completedLegCount: number;
     currentLegSequence: number | null;
     recordedAt: string;
+    acceptedRecoveryId?: string | null;
   }): Promise<ActiveJourney> {
     assertOwnerRef(input.ownerRef);
     assertIsoDate(input.recordedAt, 'recordedAt');
@@ -79,7 +99,38 @@ export class ActiveJourneyService {
         'INVALID_PROGRESS',
         'currentLegSequence must identify the current or an upcoming leg.',
       );
-    return this.repository.updateProgress(input);
+    return this.repository.updateProgress({
+      journeyId: input.journeyId,
+      ownerRef: input.ownerRef,
+      completedLegCount: input.completedLegCount,
+      currentLegSequence: input.currentLegSequence,
+      recordedAt: input.recordedAt,
+      acceptedRecoveryId: input.acceptedRecoveryId,
+    });
+  }
+
+  confirmBoarding(input: {
+    journeyId: string;
+    ownerRef: string;
+    legSequence: number;
+    confirmedAt: string;
+    acceptedRecoveryId?: string | null;
+  }): Promise<ActiveJourney> {
+    assertOwnerRef(input.ownerRef);
+    assertConfirmation(input);
+    return this.repository.confirmBoarding(input);
+  }
+
+  confirmAlighting(input: {
+    journeyId: string;
+    ownerRef: string;
+    legSequence: number;
+    confirmedAt: string;
+    acceptedRecoveryId?: string | null;
+  }): Promise<ActiveJourney> {
+    assertOwnerRef(input.ownerRef);
+    assertConfirmation(input);
+    return this.repository.confirmAlighting(input);
   }
 
   listAlerts(
@@ -94,11 +145,12 @@ export class ActiveJourneyService {
 export function activeJourneyInstanceId(
   ownerRef: string,
   routingJourneyId: string,
+  planFingerprint?: string,
 ): string {
-  return stableUuid(
-    'active-journey-instance',
-    `${ownerRef}:${routingJourneyId}`,
-  );
+  const scope = planFingerprint
+    ? `${ownerRef}:${routingJourneyId}:${planFingerprint}`
+    : `${ownerRef}:${routingJourneyId}`;
+  return stableUuid('active-journey-instance', scope);
 }
 
 export function selectedJourneyFingerprint(
@@ -106,6 +158,27 @@ export function selectedJourneyFingerprint(
 ): string {
   return createHash('sha256')
     .update(JSON.stringify(canonicalValue(journey)))
+    .digest('hex');
+}
+
+/**
+ * ponytail: product-layer identity that ignores only volatile planned_at.
+ * Frozen research fingerprints continue to use the original hash.
+ * Route, stop, service_date, and timing stay meaningful; only request-time is dropped.
+ */
+export function productActivationFingerprint(
+  journey: JourneyAlternative,
+): string {
+  const { plannedAt: _unusedPlannedAt, ...stableContext } =
+    journey.routingContext;
+  void _unusedPlannedAt;
+  return createHash('sha256')
+    .update('product-activation-v1:')
+    .update(
+      JSON.stringify(
+        canonicalValue({ ...journey, routingContext: stableContext }),
+      ),
+    )
     .digest('hex');
 }
 
@@ -171,6 +244,18 @@ function assertOwnerRef(value: string): void {
     throw new ActiveJourneyError(
       'OWNER_SCOPE_MISMATCH',
       'ownerRef must be a bounded opaque session reference.',
+    );
+}
+
+export function assertConfirmation(input: {
+  legSequence: number;
+  confirmedAt: string;
+}): void {
+  assertIsoDate(input.confirmedAt, 'confirmedAt');
+  if (!Number.isInteger(input.legSequence) || input.legSequence < 0)
+    throw new ActiveJourneyError(
+      'INVALID_BOARDING',
+      'legSequence must be a non-negative integer.',
     );
 }
 

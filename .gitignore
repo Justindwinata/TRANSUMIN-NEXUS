@@ -6,6 +6,8 @@
 # dependencies and build outputs
 node_modules/
 .next/
+.next-*/
+.next-product-acceptance/
 dist/
 build/
 coverage/
@@ -20,11 +22,15 @@ logs/
 tmp/
 temp/
 *.tmp
+data/raw
 data/raw/**
 data/staging/**
+data/processed
 data/processed/**
 artifacts/evaluation/raw/**
 artifacts/evaluation/logs/**
+.release-evidence/
+.local/geocoder/
 
 # local recovery and platform noise
 .DS_Store

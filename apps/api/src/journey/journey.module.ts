@@ -18,12 +18,14 @@ import { OtpJourneyRoutingAdapter } from './infrastructure/otp-journey-routing.a
 import { ActiveJourneyController } from './interface/active-journey.controller.js';
 import { JourneyController } from './interface/journey.controller.js';
 import { RecoveryController } from './interface/recovery.controller.js';
+import { PassengerServiceGuard } from './interface/passenger-service.guard.js';
 
 @Module({
   imports: [DatabaseModule, MobilityTwinModule, DisruptionModule],
   controllers: [JourneyController, ActiveJourneyController, RecoveryController],
   providers: [
     JourneyPlannerService,
+    PassengerServiceGuard,
     ActiveJourneyService,
     JourneyImpactService,
     RecoveryService,

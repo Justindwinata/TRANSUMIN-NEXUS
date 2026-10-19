@@ -9,6 +9,7 @@ import type {
 import {
   assertCanonicalStateBindings,
   JourneyPlannerService,
+  rankAlternatives,
 } from './application/journey-planner.service.js';
 import {
   extractJourneyDependencies,
@@ -28,8 +29,30 @@ import type {
 import { JourneyRoutingError } from './domain/journey.js';
 import {
   normalizeLeg,
+  normalizeWalkingSteps,
   parseNamespacedId,
+  OtpJourneyRoutingAdapter,
 } from './infrastructure/otp-journey-routing.adapter.js';
+
+describe('OTP manifested service-date guard', () => {
+  it('rejects dates outside router manifest before OTP request', async () => {
+    const adapter = new OtpJourneyRoutingAdapter();
+    await assert.rejects(
+      adapter.planJourney({
+        origin: { latitude: -6.2, longitude: 106.8 },
+        destination: { latitude: -6.21, longitude: 106.81 },
+        departureAt: '2000-01-01T08:00:00+07:00',
+        preference: 'BALANCED',
+        allowedModes: ['TRANSJAKARTA'],
+        excludedRouteIds: [],
+        attempt: 1,
+        networkSnapshotId: '43fb9a29-0c89-5c72-8826-e3dc2adcfb1f',
+      }),
+      (error: unknown) =>
+        (error as JourneyRoutingError).code === 'INVALID_TIME',
+    );
+  });
+});
 
 const snapshot: NetworkSnapshot = {
   snapshotId: '43fb9a29-0c89-5c72-8826-e3dc2adcfb1f',
@@ -203,6 +226,8 @@ describe('Phase 4B product journey orchestration', () => {
         route: null,
         trip: null,
         intermediateStops: null,
+        steps: null,
+        legGeometry: null,
         start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
         end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
       },
@@ -211,6 +236,175 @@ describe('Phase 4B product journey orchestration', () => {
     assert.equal(leg.mode, 'WALK');
     assert.deepEqual(leg.intermediateStops, []);
     assert.equal(leg.from.latitude, -6.2);
+  });
+
+  it('decodes OTP leg geometry into GeoJSON [longitude, latitude] coordinates', () => {
+    const leg = normalizeLeg(
+      {
+        mode: 'WALK',
+        serviceDate: null,
+        distance: 120,
+        duration: 90,
+        from: { name: 'A', lat: 38.5, lon: -120.2, stop: null },
+        to: { name: 'B', lat: 43.252, lon: -126.453, stop: null },
+        route: null,
+        trip: null,
+        intermediateStops: null,
+        steps: null,
+        legGeometry: { points: '_p~iF~ps|U_ulLnnqC_mqNvxq`@' },
+        start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
+        end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
+      },
+      0,
+    );
+    assert.deepEqual(leg.geometry, {
+      type: 'LineString',
+      coordinates: [
+        [-120.2, 38.5],
+        [-120.95, 40.7],
+        [-126.453, 43.252],
+      ],
+    });
+  });
+
+  it('preserves OTP walk steps with OTP provenance and drops invalid coordinates', () => {
+    assert.deepEqual(normalizeWalkingSteps(null), []);
+    assert.deepEqual(normalizeWalkingSteps([]), []);
+    const steps = normalizeWalkingSteps([
+      {
+        lat: -6.21,
+        lon: 106.845,
+        distance: 42,
+        streetName: 'Jalan Sudirman',
+        relativeDirection: 'RIGHT',
+        absoluteDirection: 'EAST',
+        area: false,
+        bogusName: false,
+        stayOn: true,
+      },
+      {
+        lat: -95,
+        lon: 106.8,
+        distance: 5,
+        streetName: 'Invalid',
+        relativeDirection: 'LEFT',
+        absoluteDirection: null,
+        area: null,
+        bogusName: null,
+        stayOn: null,
+      },
+      {
+        lat: -6.21,
+        lon: 106.85,
+        distance: -1,
+        streetName: null,
+        relativeDirection: null,
+        absoluteDirection: null,
+        area: null,
+        bogusName: null,
+        stayOn: null,
+      },
+    ]);
+    assert.equal(steps.length, 1);
+    assert.deepEqual(steps[0], {
+      latitude: -6.21,
+      longitude: 106.845,
+      distanceMeters: 42,
+      relativeDirection: 'RIGHT',
+      absoluteDirection: 'EAST',
+      streetName: 'Jalan Sudirman',
+      bogusName: false,
+      area: false,
+      stayOn: true,
+    });
+    const leg = normalizeLeg(
+      {
+        mode: 'WALK',
+        serviceDate: null,
+        distance: 120,
+        duration: 90,
+        from: { name: 'A', lat: -6.2, lon: 106.8, stop: null },
+        to: { name: 'B', lat: -6.21, lon: 106.81, stop: null },
+        route: null,
+        trip: null,
+        intermediateStops: null,
+        steps: [
+          {
+            lat: -6.2,
+            lon: 106.8,
+            distance: 10,
+            streetName: 'Origin Street',
+            relativeDirection: 'DEPART',
+            absoluteDirection: null,
+            area: null,
+            bogusName: null,
+            stayOn: null,
+          },
+        ],
+        legGeometry: null,
+        start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
+        end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
+      },
+      0,
+    );
+    assert.equal(leg.walkingSteps?.length, 1, 'walk steps reach the contract');
+    const transit = normalizeLeg(
+      {
+        mode: 'BUS',
+        serviceDate: null,
+        distance: 500,
+        duration: 300,
+        from: { name: 'A', lat: -6.2, lon: 106.8, stop: null },
+        to: { name: 'B', lat: -6.21, lon: 106.81, stop: null },
+        route: { gtfsId: '8:tnx:transjakarta:route:brt-6h', shortName: '6H' },
+        trip: null,
+        intermediateStops: null,
+        steps: null,
+        legGeometry: null,
+        start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
+        end: { scheduledTime: '2026-10-02T08:05:00+07:00' },
+      },
+      1,
+    );
+    assert.deepEqual(
+      transit.walkingSteps,
+      [],
+      'transit legs have no walk steps',
+    );
+  });
+
+  it('keeps geometry null when OTP omits or truncates the polyline', () => {
+    const base = {
+      mode: 'WALK',
+      serviceDate: null,
+      distance: null,
+      duration: null,
+      from: { name: 'A', lat: -6.2, lon: 106.8, stop: null },
+      to: { name: 'B', lat: -6.21, lon: 106.81, stop: null },
+      route: null,
+      trip: null,
+      intermediateStops: null,
+      steps: null,
+      start: { scheduledTime: '2026-10-02T08:00:00+07:00' },
+      end: { scheduledTime: '2026-10-02T08:01:30+07:00' },
+    };
+    assert.equal(
+      normalizeLeg({ ...base, legGeometry: null }, 0).geometry,
+      null,
+    );
+    assert.equal(
+      normalizeLeg({ ...base, legGeometry: { points: '' } }, 0).geometry,
+      null,
+    );
+    assert.equal(
+      normalizeLeg({ ...base, legGeometry: { points: '_p~iF' } }, 0).geometry,
+      null,
+    );
+    assert.equal(
+      normalizeLeg({ ...base, legGeometry: { points: '~'.repeat(14) } }, 0)
+        .geometry,
+      null,
+    );
   });
 
   it('fails explicitly when a transit entity lacks a canonical Twin binding', () => {
@@ -256,6 +450,111 @@ describe('Phase 4B product journey orchestration', () => {
       fingerprintJourneyPlan(first),
       fingerprintJourneyPlan(changed),
     );
+  });
+});
+
+describe('R4-B preference-aware deterministic ranking', () => {
+  const a = {
+    ...alternative('route-a', 'entity-a'),
+    journeyId: 'journey-a',
+    durationSeconds: 600,
+    walkingDistanceMeters: 2000,
+    transferCount: 2,
+  };
+  const b = {
+    ...alternative('route-b', 'entity-b'),
+    journeyId: 'journey-b',
+    durationSeconds: 1800,
+    walkingDistanceMeters: 100,
+    transferCount: 0,
+  };
+  const c = {
+    ...alternative('route-c', 'entity-c'),
+    journeyId: 'journey-c',
+    durationSeconds: 1000,
+    walkingDistanceMeters: 600,
+    transferCount: 1,
+  };
+
+  it('ranks FASTEST, LEAST_WALKING, and FEWEST_TRANSFERS by the matching single dimension', () => {
+    assert.deepEqual(
+      rankAlternatives([b, c, a], 'FASTEST').map((item) => item.journeyId),
+      ['journey-a', 'journey-c', 'journey-b'],
+    );
+    assert.deepEqual(
+      rankAlternatives([a, c, b], 'LEAST_WALKING').map(
+        (item) => item.journeyId,
+      ),
+      ['journey-b', 'journey-c', 'journey-a'],
+    );
+    assert.deepEqual(
+      rankAlternatives([c, b, a], 'FEWEST_TRANSFERS').map(
+        (item) => item.journeyId,
+      ),
+      ['journey-b', 'journey-c', 'journey-a'],
+    );
+  });
+
+  it('ranks BALANCED by normalized weighted cost and keeps the middle option first', () => {
+    // SIMULATED fixture: duration [.5], walking [.3], transfers [.2]; min-max
+    // normalized across these three; zero ranges contribute 0 without mixing units.
+    assert.deepEqual(
+      rankAlternatives([a, b, c], 'BALANCED').map((item) => item.journeyId),
+      ['journey-c', 'journey-a', 'journey-b'],
+    );
+  });
+
+  it('breaks ties in score, duration, walking, transfers, then journeyId order', () => {
+    const x = {
+      ...alternative('route-x', 'entity-x'),
+      journeyId: 'journey-x',
+    };
+    const y = {
+      ...alternative('route-y', 'entity-y'),
+      journeyId: 'journey-y',
+    };
+    for (const preference of [
+      'BALANCED',
+      'FASTEST',
+      'LEAST_WALKING',
+      'FEWEST_TRANSFERS',
+    ] as const) {
+      assert.deepEqual(rankAlternatives([y, x], preference), [x, y]);
+    }
+    const shorter = { ...y, durationSeconds: 1 };
+    assert.deepEqual(rankAlternatives([x, shorter], 'LEAST_WALKING'), [
+      shorter,
+      x,
+    ]);
+    const lessWalking = { ...y, walkingDistanceMeters: 0 };
+    const moreWalking = { ...x, walkingDistanceMeters: 100 };
+    assert.deepEqual(rankAlternatives([moreWalking, lessWalking], 'FASTEST'), [
+      lessWalking,
+      moreWalking,
+    ]);
+    const moreTransfers = { ...x, transferCount: 1 };
+    assert.deepEqual(rankAlternatives([moreTransfers, y], 'FASTEST'), [
+      y,
+      moreTransfers,
+    ]);
+    assert.deepEqual(rankAlternatives([], 'BALANCED'), []);
+    assert.deepEqual(rankAlternatives([x], 'BALANCED'), [x]);
+  });
+
+  it('keeps normalized ranking invariant to unit scaling and input order without mutation', () => {
+    const candidates = Object.freeze([a, b, c]);
+    const scaled = candidates.map((item) => ({
+      ...item,
+      durationSeconds: item.durationSeconds * 60,
+      walkingDistanceMeters: item.walkingDistanceMeters * 1000,
+    }));
+    const ids = (items: readonly JourneyAlternative[]) =>
+      items.map((item) => item.journeyId);
+    assert.deepEqual(
+      ids(rankAlternatives(scaled.reverse(), 'BALANCED')),
+      ids(rankAlternatives(candidates, 'BALANCED')),
+    );
+    assert.deepEqual(candidates, [a, b, c]);
   });
 });
 

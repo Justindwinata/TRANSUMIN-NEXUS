@@ -3,7 +3,10 @@ import { describe, it } from 'node:test';
 
 import type { ActiveJourneyService } from './application/active-journey.service.js';
 import type { JourneyPlannerService } from './application/journey-planner.service.js';
-import type { RecoveryRepositoryPort } from './application/recovery.repository.port.js';
+import type {
+  AcceptRecoveryInput,
+  RecoveryRepositoryPort,
+} from './application/recovery.repository.port.js';
 import { RecoveryService } from './application/recovery.service.js';
 import {
   normalizedRecoveryLeg,
@@ -11,6 +14,10 @@ import {
   preservedFutureLegCount,
 } from './application/recovery-research-metrics.js';
 import type { ActiveJourney } from './domain/active-journey.js';
+import type {
+  RecoveryAcceptance,
+  RecoveryProposal,
+} from './domain/recovery.js';
 import type {
   JourneyAlternative,
   JourneyLeg,
@@ -182,11 +189,264 @@ describe('RUN 5B state-aware recovery', () => {
     assert.notEqual(proposal.baselineJourney, null);
     assert.equal(proposal.metrics.recoverySuccess, false);
   });
+
+  it('binds proposal identity to the idempotency key without changing research fingerprints', async () => {
+    const first = await recoveryService(
+      activeJourney(),
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
+    ).create(input());
+    const second = await recoveryService(
+      activeJourney(),
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
+    ).create({ ...input(), idempotencyKey: 'recovery-key-b' });
+    assert.notEqual(first.recoveryId, second.recoveryId);
+    assert.equal(first.proposedFingerprint, second.proposedFingerprint);
+    assert.equal(first.baselineFingerprint, second.baselineFingerprint);
+  });
+
+  it('replays an equivalent proposal request after journey progression', async () => {
+    const recorded = await recoveryService(
+      activeJourney(),
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
+    ).create(input());
+    const progressed = {
+      ...activeJourney(),
+      progress: { ...activeJourney().progress, revision: 3 },
+    };
+    const replay = await recoveryService(progressed, plannerFixture([]), {
+      findByIdempotency: async () => recorded,
+      getCurrentImpact: async () => {
+        throw new Error('current impact must not gate receipt replay');
+      },
+    }).create(input());
+    assert.deepEqual(replay, recorded);
+  });
+});
+
+describe('M6 recovery acceptance', () => {
+  it('accepts current completed proposal and persists lineage', async () => {
+    const active = activeJourney();
+    const proposal = await recoveryService(
+      active,
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
+    ).create(input());
+    const fixture = acceptanceFixture(active, proposal);
+    const acceptance = await fixture.service.accept(acceptInput(proposal));
+    assert.equal(acceptance.recoveryId, proposal.recoveryId);
+    assert.equal(acceptance.activeJourneyId, active.journeyId);
+    assert.equal(acceptance.acceptedProgressRevision, 2);
+    assert.equal(acceptance.acceptedImpactId, proposal.impactId);
+    assert.deepEqual(active.originalPlan, active.originalPlan);
+  });
+
+  it('replays matching acceptance receipt after progress and impact changes', async () => {
+    const active = activeJourney();
+    const proposal = await recoveryService(
+      active,
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
+    ).create(input());
+    const first = await acceptanceFixture(active, proposal).service.accept(
+      acceptInput(proposal),
+    );
+    const replay = await acceptanceFixture(active, proposal, {
+      revision: 3,
+      impactCurrent: false,
+      acceptedByKey: first,
+      journeyMissing: true,
+    }).service.accept(acceptInput(proposal));
+    assert.deepEqual(replay, first);
+  });
+
+  it('rejects same acceptance key with different revision', async () => {
+    const active = activeJourney();
+    const proposal = await recoveryService(
+      active,
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
+    ).create(input());
+    const receipt = await acceptanceFixture(active, proposal).service.accept(
+      acceptInput(proposal),
+    );
+    await assert.rejects(
+      acceptanceFixture(active, proposal, {
+        acceptedByKey: receipt,
+      }).service.accept({
+        ...acceptInput(proposal),
+        progressRevision: 3,
+      }),
+      { code: 'IDEMPOTENCY_CONFLICT' },
+    );
+  });
+
+  it('rejects a competing key for an already accepted proposal', async () => {
+    const active = activeJourney();
+    const proposal = await recoveryService(
+      active,
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
+    ).create(input());
+    const receipt = await acceptanceFixture(active, proposal).service.accept(
+      acceptInput(proposal),
+    );
+    await assert.rejects(
+      acceptanceFixture(active, proposal, { accepted: receipt }).service.accept(
+        {
+          ...acceptInput(proposal),
+          idempotencyKey: 'accept-key-b',
+        },
+      ),
+      { code: 'IDEMPOTENCY_CONFLICT' },
+    );
+  });
+
+  it('rejects stale progress, blocked candidate, noncurrent impact and NO_PATH', async () => {
+    const active = activeJourney();
+    const proposal = await recoveryService(
+      active,
+      plannerFixture([
+        result(baselineAlternative()),
+        result(repairAlternative()),
+      ]),
+    ).create(input());
+    await assert.rejects(
+      acceptanceFixture(active, proposal, { revision: 3 }).service.accept(
+        acceptInput(proposal),
+      ),
+      { code: 'RECOVERY_STALE' },
+    );
+    await assert.rejects(
+      acceptanceFixture(active, proposal, { blocked: true }).service.accept(
+        acceptInput(proposal),
+      ),
+      { code: 'RECOVERY_CANDIDATE_BLOCKED' },
+    );
+    await assert.rejects(
+      acceptanceFixture(active, proposal, {
+        impactCurrent: false,
+      }).service.accept(acceptInput(proposal)),
+      { code: 'RECOVERY_STALE' },
+    );
+    const noPath = await recoveryService(
+      active,
+      plannerFixture([result(baselineAlternative()), null]),
+    ).create(input());
+    await assert.rejects(
+      acceptanceFixture(active, noPath).service.accept(acceptInput(noPath)),
+      { code: 'RECOVERY_NOT_ACCEPTABLE' },
+    );
+  });
 });
 
 const blockedEntity = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
-function recoveryService(active: ActiveJourney, planner: PlannerFixture) {
+function acceptanceFixture(
+  active: ActiveJourney,
+  proposal: RecoveryProposal,
+  options: {
+    revision?: number;
+    blocked?: boolean;
+    impactCurrent?: boolean;
+    accepted?: RecoveryAcceptance | null;
+    acceptedByKey?: RecoveryAcceptance | null;
+    journeyMissing?: boolean;
+  } = {},
+) {
+  const accepted: Array<AcceptRecoveryInput> = [];
+  const journeys = {
+    get: async () => {
+      if (options.journeyMissing === true)
+        throw new Error('JOURNEY_NOT_FOUND: fixture');
+      return {
+        ...active,
+        progress: {
+          ...active.progress,
+          revision: options.revision ?? active.progress.revision,
+        },
+      };
+    },
+  } as unknown as ActiveJourneyService;
+  const planner = {
+    validateOperationalState: async () => ({
+      blockedEntityIds: options.blocked === true ? [blockedEntity] : [],
+      stateByEntity: new Map<string, unknown>(),
+    }),
+  } as unknown as JourneyPlannerService;
+  const repository: RecoveryRepositoryPort = {
+    findByIdempotency: async () => null,
+    getCurrentImpact: async () =>
+      (options.impactCurrent ?? true)
+        ? {
+            impactId: proposal.impactId,
+            journeyId: active.journeyId,
+            mobilityEntityId: proposal.triggeringEntityId,
+            stateTransitionId: proposal.stateTransitionId,
+            operationalState: 'UNAVAILABLE',
+            projectionVersion: proposal.mobilityProjectionVersion,
+            provenanceRef: 'fixture:SIMULATED',
+          }
+        : null,
+    save: async (value) => value,
+    get: async () => proposal,
+    accept: async (acceptInputValue) => {
+      accepted.push(acceptInputValue);
+      return {
+        recoveryId: acceptInputValue.recoveryId,
+        activeJourneyId: proposal.activeJourneyId,
+        ownerRef: acceptInputValue.ownerRef,
+        acceptedProgressRevision: acceptInputValue.progressRevision,
+        acceptedImpactId: proposal.impactId,
+        acceptedStateTransitionId: proposal.stateTransitionId,
+        acceptedMobilityProjectionVersion: proposal.mobilityProjectionVersion,
+        acceptedJourneyFingerprint: acceptInputValue.acceptedJourneyFingerprint,
+        predecessorRecoveryId: proposal.baseRecoveryId ?? null,
+        acceptedJourney: acceptInputValue.acceptedJourney!,
+        acceptedAt: acceptInputValue.acceptedAt,
+      };
+    },
+    findAcceptance: async () => options.accepted ?? null,
+    findAcceptanceByIdempotency: async () => options.acceptedByKey ?? null,
+  };
+  return {
+    service: new RecoveryService(journeys, planner, repository),
+    repository,
+    accepted,
+  };
+}
+
+function acceptInput(proposal: RecoveryProposal) {
+  return {
+    recoveryId: proposal.recoveryId,
+    ownerRef: 'owner-a',
+    idempotencyKey: 'accept-key-a',
+    progressRevision: 2,
+    acceptedAt: '2026-10-02T08:12:00+07:00',
+  };
+}
+
+function recoveryService(
+  active: ActiveJourney,
+  planner: PlannerFixture,
+  overrides: Partial<RecoveryRepositoryPort> = {},
+) {
   const journeys = {
     get: async () => active,
   } as unknown as ActiveJourneyService;
@@ -205,6 +465,12 @@ function recoveryService(active: ActiveJourney, planner: PlannerFixture) {
     get: async () => {
       throw new Error('unused');
     },
+    accept: async () => {
+      throw new Error('unused');
+    },
+    findAcceptance: async () => null,
+    findAcceptanceByIdempotency: async () => null,
+    ...overrides,
   };
   return new RecoveryService(
     journeys,
@@ -279,6 +545,10 @@ function activeJourney(): ActiveJourney {
       method: 'CONTROLLED_MANUAL',
       recordedAt: '2026-10-02T08:10:00+07:00',
       revision: 2,
+      boardingConfirmedLegSequence: null,
+      boardingConfirmedAt: null,
+      alightingConfirmedLegSequence: null,
+      alightingConfirmedAt: null,
     },
     dependencies: [],
   };

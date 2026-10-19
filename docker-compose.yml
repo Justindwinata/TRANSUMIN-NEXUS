@@ -24,4 +24,4 @@ services:
 
 volumes:
   postgres_data:
-    name: transum-in-nexus-postgres-data
+    name: ${POSTGRES_VOLUME_NAME:-transum-in-nexus-product-postgres-data}

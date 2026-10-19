@@ -8,6 +8,7 @@ import { OperationalContractValidator } from '../operational-data/application/op
 import type { OperationalObservation } from '../operational-data/domain/operational-data.js';
 import { createDatabase } from '../infrastructure/database/database.client.js';
 import { migrateToLatest } from '../infrastructure/database/database.migrator.js';
+import { assertInvocationScratchDatabase } from '../infrastructure/database/scratch.guard.js';
 import { KyselyMobilityStateRepository } from './infrastructure/kysely-mobility-state.repository.js';
 import { MobilityStateController } from './interface/mobility-state.controller.js';
 
@@ -53,55 +54,10 @@ function observation(
   };
 }
 
-async function clearFixture(): Promise<void> {
-  await sql`delete from twin.mobility_state_history where mobility_entity_id=${entityId}::uuid`.execute(
-    database,
-  );
-  await sql`delete from twin.mobility_state where mobility_entity_id=${entityId}::uuid`.execute(
-    database,
-  );
-  await sql`alter table twin.network_snapshot_state disable trigger network_snapshot_state_immutable_update`.execute(
-    database,
-  );
-  await sql`delete from twin.network_snapshot_state where mobility_entity_id=${entityId}::uuid`.execute(
-    database,
-  );
-  await sql`alter table twin.network_snapshot_state enable trigger network_snapshot_state_immutable_update`.execute(
-    database,
-  );
-  await sql`alter table twin.network_snapshot disable trigger network_snapshot_immutable_update`.execute(
-    database,
-  );
-  await sql`delete from twin.network_snapshot where transit_dataset_version_id=${versionId}::uuid`.execute(
-    database,
-  );
-  await sql`alter table twin.network_snapshot enable trigger network_snapshot_immutable_update`.execute(
-    database,
-  );
-  await sql`alter table twin.operational_observation disable trigger operational_observation_append_only`.execute(
-    database,
-  );
-  await sql`delete from twin.operational_observation where mobility_entity_id=${entityId}::uuid`.execute(
-    database,
-  );
-  await sql`alter table twin.operational_observation enable trigger operational_observation_append_only`.execute(
-    database,
-  );
-  await sql`delete from twin.mobility_entity where id=${entityId}::uuid`.execute(
-    database,
-  );
-  await sql`delete from meta.dataset_version where id=${versionId}::uuid`.execute(
-    database,
-  );
-  await sql`delete from meta.dataset_source where id=${sourceId}::uuid`.execute(
-    database,
-  );
-}
-
 describe('Phase 2B Mobility Twin persistence and snapshots', () => {
   before(async () => {
+    await assertInvocationScratchDatabase(database);
     await migrateToLatest(database);
-    await clearFixture();
     await sql`
       insert into meta.dataset_source (
         id, source_key, name, provider, source_type, verification_status
@@ -126,7 +82,6 @@ describe('Phase 2B Mobility Twin persistence and snapshots', () => {
   });
 
   after(async () => {
-    await clearFixture();
     await database.destroy();
   });
 

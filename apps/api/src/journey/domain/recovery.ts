@@ -51,6 +51,8 @@ export type RecoveryMethodMetrics = Readonly<{
 export type RecoveryProposal = Readonly<{
   recoveryId: string;
   activeJourneyId: string;
+  /** Pointer generation observed before routing/OTP work; null means original G0. */
+  baseRecoveryId?: string | null;
   impactId: string;
   ownerRef: string;
   method: 'STATE_AWARE_REPAIR';
@@ -79,6 +81,30 @@ export type RecoveryProposal = Readonly<{
   metrics: RecoveryMetrics;
 }>;
 
+/**
+ * Additive acceptance lineage. The immutable original itinerary in
+ * journey.journey_plan/original_plan_json is never rewritten; this record pins
+ * the accepted replacement/continuation the traveller is now following.
+ */
+export type RecoveryAcceptance = Readonly<{
+  recoveryId: string;
+  activeJourneyId: string;
+  ownerRef: string;
+  /**
+   * Durable generation chain: the accepted recovery this acceptance superseded
+   * (the active pointer value at accept time). null links back to G0/original.
+   * Immutable; never rewritten by later acceptances.
+   */
+  predecessorRecoveryId: string | null;
+  acceptedProgressRevision: number;
+  acceptedImpactId: string;
+  acceptedStateTransitionId: string;
+  acceptedMobilityProjectionVersion: string;
+  acceptedJourneyFingerprint: string;
+  acceptedJourney: JourneyAlternative;
+  acceptedAt: string;
+}>;
+
 export class RecoveryError extends Error {
   constructor(
     readonly code:
@@ -86,7 +112,10 @@ export class RecoveryError extends Error {
       | 'IMPACT_NOT_CURRENT'
       | 'INVALID_RECOVERY_ANCHOR'
       | 'NO_RECOVERY_PATH'
-      | 'IDEMPOTENCY_CONFLICT',
+      | 'IDEMPOTENCY_CONFLICT'
+      | 'RECOVERY_NOT_ACCEPTABLE'
+      | 'RECOVERY_STALE'
+      | 'RECOVERY_CANDIDATE_BLOCKED',
     message: string,
   ) {
     super(message);

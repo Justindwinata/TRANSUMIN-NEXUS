@@ -5,6 +5,8 @@ import {
   Body,
   Controller,
   Inject,
+  Get,
+  Header,
   Post,
   ServiceUnavailableException,
   UnprocessableEntityException,
@@ -19,8 +21,8 @@ import type {
 import { JourneyRoutingError } from '../domain/journey.js';
 
 type JourneyPlanBody = Readonly<{
-  origin?: GeoPoint;
-  destination?: GeoPoint;
+  origin?: GeoPoint | null;
+  destination?: GeoPoint | null;
   departure_at?: string;
   network_snapshot_id?: string;
   preference?: JourneyPlanRequest['preference'];
@@ -32,6 +34,21 @@ export class JourneyController {
     @Inject(JourneyPlannerService)
     private readonly planner: JourneyPlannerService,
   ) {}
+
+  @Get('planning-health')
+  @Header('cache-control', 'no-store')
+  async planningHealth(): Promise<Record<string, unknown>> {
+    const health = await this.planner.health();
+    return {
+      data: {
+        status: health.status,
+        provider: health.provider,
+        version: health.version,
+        checked_at: health.checkedAt,
+        latency_milliseconds: health.latencyMilliseconds,
+      },
+    };
+  }
 
   @Post('plan')
   async plan(@Body() body: JourneyPlanBody): Promise<Record<string, unknown>> {
@@ -92,13 +109,18 @@ function parseRequest(
   body: JourneyPlanBody,
   requestId: string,
 ): JourneyPlanRequest {
+  if (body === null || typeof body !== 'object' || Array.isArray(body))
+    invalid('request body must be an object.', requestId);
   assertPoint(body.origin, 'origin', requestId);
   assertPoint(body.destination, 'destination', requestId);
   if (
-    body.departure_at === undefined ||
-    !Number.isFinite(Date.parse(body.departure_at))
+    typeof body.departure_at !== 'string' ||
+    !isExplicitDateTime(body.departure_at)
   )
-    invalid('departure_at must be an ISO date-time.', requestId);
+    invalid(
+      'departure_at must be a valid RFC3339 date-time with timezone.',
+      requestId,
+    );
   if (
     body.network_snapshot_id === undefined ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -123,19 +145,54 @@ function parseRequest(
   };
 }
 
+function isExplicitDateTime(value: string): boolean {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.exec(
+      value,
+    );
+  if (match === null) return false;
+  const [, year, month, day, hour, minute, second, , timezone] = match;
+  if (
+    timezone !== undefined &&
+    timezone !== 'Z' &&
+    (Number(timezone.slice(1, 3)) > 23 || Number(timezone.slice(4)) > 59)
+  )
+    return false;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return false;
+  const y = Number(year);
+  const leapYear = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+  const daysInMonth =
+    [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][
+      Number(month) - 1
+    ] ?? 0;
+  return (
+    Number(month) >= 1 &&
+    Number(month) <= 12 &&
+    Number(day) >= 1 &&
+    Number(day) <= daysInMonth &&
+    Number(hour) <= 23 &&
+    Number(minute) <= 59 &&
+    Number(second) <= 59
+  );
+}
+
 function assertPoint(
-  point: GeoPoint | undefined,
+  point: GeoPoint | null | undefined,
   field: string,
   requestId: string,
 ): asserts point is GeoPoint {
   if (
+    point === null ||
     point === undefined ||
-    !Number.isFinite(point.latitude) ||
-    !Number.isFinite(point.longitude) ||
-    point.latitude < -90 ||
-    point.latitude > 90 ||
-    point.longitude < -180 ||
-    point.longitude > 180
+    typeof point !== 'object' ||
+    Array.isArray(point) ||
+    !Number.isFinite((point as GeoPoint).latitude) ||
+    !Number.isFinite((point as GeoPoint).longitude) ||
+    (point as GeoPoint).latitude < -90 ||
+    (point as GeoPoint).latitude > 90 ||
+    (point as GeoPoint).longitude < -180 ||
+    (point as GeoPoint).longitude > 180
   )
     invalid(`${field} must contain valid latitude and longitude.`, requestId);
 }
@@ -184,6 +241,18 @@ export function mapAlternative(journey: JourneyAlternative) {
       trip_id: leg.tripId,
       service_date: leg.serviceDate,
       timing_precision: leg.timingPrecision,
+      geometry: leg.geometry ?? null,
+      walking_steps: (leg.walkingSteps ?? []).map((step) => ({
+        latitude: step.latitude,
+        longitude: step.longitude,
+        distance_meters: step.distanceMeters,
+        relative_direction: step.relativeDirection,
+        absolute_direction: step.absoluteDirection,
+        street_name: step.streetName,
+        bogus_name: step.bogusName,
+        area: step.area,
+        stay_on: step.stayOn,
+      })),
       evidence_type: leg.mode === 'WALK' ? 'ESTIMATED' : 'SCHEDULED',
       entity_bindings: leg.entityBindings.map((binding) => ({
         otp_entity_id: binding.otpEntityId,

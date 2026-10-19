@@ -20,6 +20,7 @@ import {
   type JourneyAlternative,
   type JourneyLeg,
   type JourneyTimingPrecision,
+  type JourneyWalkingStep,
   JourneyRoutingError,
 } from '../domain/journey.js';
 
@@ -61,8 +62,21 @@ type OtpLeg = Readonly<{
   route: { gtfsId: string; shortName: string | null } | null;
   trip: { gtfsId: string } | null;
   intermediateStops: readonly OtpStop[] | null;
+  steps?: readonly OtpWalkStep[] | null;
+  legGeometry: { points: string | null } | null;
   start: { scheduledTime: string };
   end: { scheduledTime: string };
+}>;
+type OtpWalkStep = Readonly<{
+  lat: number | null;
+  lon: number | null;
+  distance: number | null;
+  streetName: string | null;
+  relativeDirection: string | null;
+  absoluteDirection: string | null;
+  area: boolean | null;
+  bogusName: boolean | null;
+  stayOn: boolean | null;
 }>;
 type OtpPlan = Readonly<{
   planConnection: {
@@ -121,6 +135,10 @@ query ProductJourneyPlan(
           route { gtfsId shortName }
           trip { gtfsId }
           intermediateStops { gtfsId name lat lon }
+          steps {
+            lat lon distance streetName relativeDirection absoluteDirection area bogusName stayOn
+          }
+          legGeometry { points }
           start { scheduledTime }
           end { scheduledTime }
         }
@@ -171,6 +189,36 @@ export class OtpJourneyRoutingAdapter implements JourneyRoutingPort {
       ),
     ];
     const transitEnabled = otpTransitModes.length > 0;
+    // Mixed research feeds only evidence their manifested common service dates.
+    // OTP may return walking-only edges instead of OUTSIDE_SERVICE_PERIOD.
+    const departure = new Date(request.departureAt);
+    const serviceDate = Number.isFinite(departure.getTime())
+      ? new Intl.DateTimeFormat('en-CA', {
+          timeZone: this.routerManifest.timezone,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }).format(departure)
+      : '';
+    if (
+      transitEnabled &&
+      !this.routerManifest.serviceDates.some(
+        (entry) => entry.representativeDate === serviceDate,
+      )
+    )
+      throw new JourneyRoutingError(
+        'INVALID_TIME',
+        'Requested time is outside the manifested service dates. Choose a supported historical service date.',
+        {
+          supportedServiceDates: [
+            ...new Set(
+              this.routerManifest.serviceDates.map(
+                (entry) => entry.representativeDate,
+              ),
+            ),
+          ],
+        },
+      );
     const variables = {
       origin: {
         label: 'Origin',
@@ -361,9 +409,81 @@ export function normalizeLeg(leg: OtpLeg, sequence: number): JourneyLeg {
     tripId: leg.trip?.gtfsId ?? null,
     serviceDate: leg.serviceDate,
     timingPrecision: timingPrecision(mode),
+    geometry: decodeLegGeometry(leg.legGeometry?.points ?? null),
+    walkingSteps:
+      mode === 'WALK' ? normalizeWalkingSteps(leg.steps ?? null) : [],
     entityBindings: [],
     operationalFlags: [],
   };
+}
+
+function decodeLegGeometry(encoded: string | null): JourneyLeg['geometry'] {
+  if (!encoded || encoded.length > 120_000) return null;
+  const coordinates: Array<[number, number]> = [];
+  let index = 0;
+  let latitude = 0;
+  let longitude = 0;
+  function delta(): number | null {
+    let value = 0;
+    for (let shift = 0; shift <= 25; shift += 5) {
+      if (index >= encoded!.length) return null;
+      const byte = encoded!.charCodeAt(index++) - 63;
+      if (byte < 0 || byte > 63) return null;
+      value += (byte & 31) * 2 ** shift;
+      if (byte < 32) return value % 2 === 1 ? -(value + 1) / 2 : value / 2;
+    }
+    return null;
+  }
+  while (index < encoded.length) {
+    if (coordinates.length >= 10_000) return null;
+    const latitudeDelta = delta();
+    const longitudeDelta = delta();
+    if (latitudeDelta === null || longitudeDelta === null) return null;
+    latitude += latitudeDelta;
+    longitude += longitudeDelta;
+    if (Math.abs(latitude) > 9_000_000 || Math.abs(longitude) > 18_000_000)
+      return null;
+    coordinates.push([longitude / 1e5, latitude / 1e5]);
+  }
+  return coordinates.length >= 2 ? { type: 'LineString', coordinates } : null;
+}
+
+export function normalizeWalkingSteps(
+  steps: readonly OtpWalkStep[] | null,
+): JourneyWalkingStep[] {
+  if (!steps) return [];
+  const normalized: JourneyWalkingStep[] = [];
+  for (const step of steps) {
+    if (!step) continue;
+    const { lat, lon, distance } = step;
+    if (
+      lat === null ||
+      lon === null ||
+      distance === null ||
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lon) ||
+      lat < -90 ||
+      lat > 90 ||
+      lon < -180 ||
+      lon > 180 ||
+      !Number.isFinite(distance) ||
+      distance < 0
+    )
+      continue;
+    normalized.push({
+      latitude: lat,
+      longitude: lon,
+      distanceMeters: distance,
+      relativeDirection: step.relativeDirection ?? null,
+      absoluteDirection: step.absoluteDirection ?? null,
+      streetName: step.streetName ?? null,
+      bogusName: step.bogusName === true,
+      area: step.area === true,
+      stayOn: step.stayOn === true,
+    });
+  }
+  // Steps remain in OTP order, including the DEPART step at the leg origin.
+  return normalized;
 }
 
 export function parseNamespacedId(value: string): Readonly<{

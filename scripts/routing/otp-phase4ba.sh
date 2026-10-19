@@ -78,11 +78,15 @@ start_router() {
     echo 'graph.obj is missing; run build first.' >&2
     exit 1
   }
+  local expected_graph
+  expected_graph=$(node -p 'require(process.argv[1]).graph.sha256' "$REPOSITORY_ROOT/data/manifests/PHASE-4B-A-OTP-RUNTIME.json")
+  [[ "$expected_graph" =~ ^[0-9a-f]{64}$ ]] || { echo 'Invalid manifested graph checksum' >&2; exit 1; }
+  assert_checksum "$INPUT_DIRECTORY/graph.obj" "$expected_graph"
   if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     echo 'OTP router is already running.' >&2
     exit 1
   fi
-  nohup "$JAVA_BINARY" -Xmx5G -jar "$OTP_JAR" --load --serve "$INPUT_DIRECTORY" >"$LOG_FILE" 2>&1 &
+  nohup "$JAVA_BINARY" -Xmx5G -jar "$OTP_JAR" --load --serve --bindAddress 127.0.0.1 "$INPUT_DIRECTORY" >"$LOG_FILE" 2>&1 &
   echo "$!" > "$PID_FILE"
   local started now
   started=$(date +%s)

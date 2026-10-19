@@ -17,6 +17,7 @@ import {
   type FoundationDatabase,
 } from './database.constants.js';
 import { getMigrationStatus, migrateToLatest } from './database.migrator.js';
+import { assertInvocationScratchDatabase } from './scratch.guard.js';
 
 const unavailableDatabase = new Kysely<FoundationDatabase>({
   dialect: new PostgresDialect({
@@ -53,6 +54,7 @@ describe('PostgreSQL/PostGIS foundation', () => {
   const database = createDatabase();
 
   before(async () => {
+    await assertInvocationScratchDatabase(database);
     await migrateToLatest(database);
   });
 
@@ -96,32 +98,65 @@ describe('PostgreSQL/PostGIS foundation', () => {
       order by schema_name
     `.execute(database);
 
+    const migrationNames = status.map((migration) => migration.name);
     assert.equal(secondRun.length, 0);
-    assert.equal(status.length, 12);
-    assert.deepEqual(
-      status.map((migration) => migration.name),
-      [
-        '202609280001_foundation',
-        '202609280002_data_provenance_and_transit',
-        '202609290001_gtfs_source_fidelity',
-        '202609290002_phase1_transit_hardening',
-        '202609300001_spatial_pedestrian_foundation',
-        '202610010001_hybrid_mobility_twin',
-        '202610010002_live_operational_gateway',
-        '202610010003_disruption_and_simulation_intelligence',
-        '202610030001_active_journey_targeted_alerts',
-        '202610050001_state_aware_journey_recovery',
-        '202610060001_active_journey_instance_identity',
-        '202610080001_ext_x1_incident_lifecycle',
-      ],
-    );
+    assert.ok(migrationNames.length > 0);
+    assert.deepEqual(migrationNames, [...migrationNames].sort());
+    assert.equal(new Set(migrationNames).size, migrationNames.length);
     assert.ok(
       status.every((migration) => migration.executedAt instanceof Date),
+      'Every discovered migration must be applied',
+    );
+    const ledger = await sql<{ name: string }>`
+      select name from meta.kysely_migration order by name
+    `.execute(database);
+    assert.deepEqual(
+      ledger.rows.map((row) => row.name),
+      migrationNames,
+      'Applied ledger must equal the migration files discovered in source',
     );
     assert.deepEqual(
       schemas.rows.map((row) => row.schemaName).sort(),
       [...FOUNDATION_SCHEMAS].sort(),
     );
+  });
+
+  it('enforces the unvalidated hazard-evidence check on new writes and validates it cleanly', async () => {
+    const constraintBefore = await sql<{ validated: boolean }>`
+      select convalidated as validated from pg_constraint
+      where conrelid='disruption.event'::regclass
+        and conname='disruption_event_hazard_evidence_check'
+    `.execute(database);
+    assert.deepEqual(constraintBefore.rows, [{ validated: false }]);
+
+    await assert.rejects(
+      sql`
+        insert into disruption.event (
+          id, incident_type, source_id, evidence_type, operational_state,
+          effective_from, effective_to, received_at, geometry, reason,
+          provenance_ref, raw_reference, dedupe_key
+        ) values (
+          '70000000-0000-4000-8000-000000000001'::uuid, 'FLOOD',
+          '70000000-0000-4000-8000-000000000002'::uuid, 'OBSERVED', 'UNKNOWN',
+          '2026-10-01T00:00:00Z', '2026-10-01T01:00:00Z',
+          '2026-10-01T00:01:00Z', ST_SetSRID(ST_MakePoint(106.8456, -6.2088), 4326),
+          'Invalid flood evidence fixture.', 'fixture:hazard-check',
+          'fixture:hazard-check', ${'7'.repeat(64)}
+        )
+      `.execute(database),
+      /disruption_event_hazard_evidence_check/,
+    );
+
+    await sql`
+      alter table disruption.event
+      validate constraint disruption_event_hazard_evidence_check
+    `.execute(database);
+    const constraintAfter = await sql<{ validated: boolean }>`
+      select convalidated as validated from pg_constraint
+      where conrelid='disruption.event'::regclass
+        and conname='disruption_event_hazard_evidence_check'
+    `.execute(database);
+    assert.deepEqual(constraintAfter.rows, [{ validated: true }]);
   });
 
   it('serves independent liveness and database-backed readiness endpoints', async () => {

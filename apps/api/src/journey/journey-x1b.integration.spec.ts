@@ -9,6 +9,7 @@ import { OperationalEventBus } from '../disruption/application/operational-event
 import { KyselyIncidentLifecycleRepository } from '../disruption/infrastructure/kysely-incident-lifecycle.repository.js';
 import { createDatabase } from '../infrastructure/database/database.client.js';
 import { migrateToLatest } from '../infrastructure/database/database.migrator.js';
+import { assertInvocationScratchDatabase } from '../infrastructure/database/scratch.guard.js';
 import { KyselyMobilityStateRepository } from '../mobility-twin/infrastructure/kysely-mobility-state.repository.js';
 import { OperationalContractValidator } from '../operational-data/application/operational-contract-validator.js';
 import { OperationalIncidentService } from '../operational-data/application/operational-incident.service.js';
@@ -76,8 +77,8 @@ let hazardEventId: string | null = null;
 
 describe('X1-B lifecycle-driven targeted alerts (SIMULATED)', () => {
   before(async () => {
+    await assertInvocationScratchDatabase(database);
     await migrateToLatest(database);
-    await clearFixture();
     await sql`
       insert into meta.dataset_source (
         id, source_key, name, provider, source_type, verification_status
@@ -117,7 +118,6 @@ describe('X1-B lifecycle-driven targeted alerts (SIMULATED)', () => {
 
   after(async () => {
     impacts.onModuleDestroy();
-    await clearFixture();
     await database.destroy();
   });
 
@@ -145,12 +145,25 @@ describe('X1-B lifecycle-driven targeted alerts (SIMULATED)', () => {
       selectedJourney: plan(ids.journeyC, [ids.affectedEntity]),
       activatedAt,
     });
+    const completedAt = new Date(Date.parse(activatedAt) + 1000).toISOString();
+    await journeys.confirmBoarding({
+      journeyId: activeC,
+      ownerRef: owners.c,
+      legSequence: 0,
+      confirmedAt: activatedAt,
+    });
+    await journeys.confirmAlighting({
+      journeyId: activeC,
+      ownerRef: owners.c,
+      legSequence: 0,
+      confirmedAt: completedAt,
+    });
     await journeys.updateProgress({
       journeyId: activeC,
       ownerRef: owners.c,
       completedLegCount: 1,
       currentLegSequence: null,
-      recordedAt: new Date(Date.parse(activatedAt) + 1000).toISOString(),
+      recordedAt: completedAt,
     });
     assert.equal(
       (await journeys.get(activeC, owners.c)).lifecycleStatus,
@@ -188,6 +201,7 @@ describe('X1-B lifecycle-driven targeted alerts (SIMULATED)', () => {
         rawReference: 'fixture:SIMULATED:x1b:hazard',
       })
     ).eventId;
+    assert.ok(hazardEventId !== null);
     await impacts.whenIdle();
     assert.equal(
       (await states.getCurrentState(ids.affectedEntity)).operationalState,
@@ -457,112 +471,4 @@ function leg(entityId: string, sequence: number): JourneyLeg {
     ],
     operationalFlags: [],
   };
-}
-
-async function clearFixture(): Promise<void> {
-  const journeyIds = sql.join(
-    allActiveIds.map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
-  const incidentList = sql.join(
-    Object.values(incidentIds).map((id) => sql`${id}::uuid`),
-    sql`, `,
-  );
-  await sql`delete from journey.targeted_alert where journey_id in (${journeyIds})`.execute(
-    database,
-  );
-  await sql`delete from journey.journey_impact_dependency where impact_id in (select id from journey.journey_impact where journey_id in (${journeyIds}))`.execute(
-    database,
-  );
-  await sql`delete from journey.journey_impact where journey_id in (${journeyIds})`.execute(
-    database,
-  );
-  await sql`delete from journey.journey_state_event where journey_id in (${journeyIds})`.execute(
-    database,
-  );
-  await sql`delete from journey.journey_progress where journey_id in (${journeyIds})`.execute(
-    database,
-  );
-  await sql`delete from journey.active_journey where journey_id in (${journeyIds})`.execute(
-    database,
-  );
-  for (const table of ['journey_dependency', 'journey_leg', 'journey_plan'])
-    await sql
-      .raw(`alter table journey.${table} disable trigger ${table}_immutable`)
-      .execute(database);
-  await sql`delete from journey.journey_dependency where journey_id in (${journeyIds})`.execute(
-    database,
-  );
-  await sql`delete from journey.journey_leg where journey_id in (${journeyIds})`.execute(
-    database,
-  );
-  await sql`delete from journey.journey_plan where id in (${journeyIds})`.execute(
-    database,
-  );
-  for (const table of ['journey_dependency', 'journey_leg', 'journey_plan'])
-    await sql
-      .raw(`alter table journey.${table} enable trigger ${table}_immutable`)
-      .execute(database);
-
-  await sql`alter table disruption.operational_incident_journal disable trigger operational_incident_journal_append_only`.execute(
-    database,
-  );
-  await sql`delete from disruption.operational_incident_journal where incident_id in (${incidentList}) or hazard_event_id=${hazardEventId}::uuid`.execute(
-    database,
-  );
-  await sql`alter table disruption.operational_incident_journal enable trigger operational_incident_journal_append_only`.execute(
-    database,
-  );
-  await sql`delete from disruption.operational_incident_entity where incident_id in (${incidentList})`.execute(
-    database,
-  );
-  await sql`delete from disruption.operational_incident where id in (${incidentList})`.execute(
-    database,
-  );
-  if (hazardEventId !== null) {
-    await sql`delete from disruption.entity_impact where impact_analysis_id in (select id from disruption.impact_analysis where disruption_event_id=${hazardEventId}::uuid)`.execute(
-      database,
-    );
-    await sql`delete from disruption.impact_analysis where disruption_event_id=${hazardEventId}::uuid`.execute(
-      database,
-    );
-    await sql`delete from disruption.event where id=${hazardEventId}::uuid`.execute(
-      database,
-    );
-    hazardEventId = null;
-  }
-
-  await sql`delete from twin.mobility_state_history where mobility_entity_id in (${ids.affectedEntity}::uuid, ${ids.unrelatedEntity}::uuid)`.execute(
-    database,
-  );
-  await sql`delete from twin.mobility_state where mobility_entity_id in (${ids.affectedEntity}::uuid, ${ids.unrelatedEntity}::uuid)`.execute(
-    database,
-  );
-  await sql`alter table twin.operational_observation disable trigger operational_observation_append_only`.execute(
-    database,
-  );
-  await sql`delete from twin.operational_observation where mobility_entity_id in (${ids.affectedEntity}::uuid, ${ids.unrelatedEntity}::uuid)`.execute(
-    database,
-  );
-  await sql`alter table twin.operational_observation enable trigger operational_observation_append_only`.execute(
-    database,
-  );
-  await sql`alter table twin.network_snapshot disable trigger network_snapshot_immutable_update`.execute(
-    database,
-  );
-  await sql`delete from twin.network_snapshot where id=${ids.snapshot}::uuid`.execute(
-    database,
-  );
-  await sql`alter table twin.network_snapshot enable trigger network_snapshot_immutable_update`.execute(
-    database,
-  );
-  await sql`delete from twin.mobility_entity where id in (${ids.affectedEntity}::uuid, ${ids.unrelatedEntity}::uuid)`.execute(
-    database,
-  );
-  await sql`delete from meta.dataset_version where id=${ids.version}::uuid`.execute(
-    database,
-  );
-  await sql`delete from meta.dataset_source where id=${ids.source}::uuid`.execute(
-    database,
-  );
 }

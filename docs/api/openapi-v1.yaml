@@ -155,6 +155,33 @@ paths:
           content:
             text/event-stream:
               schema: {type: string}
+  /api/v1/journeys/planning-health:
+    get:
+      tags: [Journeys]
+      operationId: getPlanningHealth
+      description: Point-in-time OTP GraphQL reachability, not route feasibility or live-data freshness. Independent of database-only /health/ready. Read-only; no owner data or credentials returned. Passenger proxy requires its signed session and service identity. No automatic polling; client may explicitly recheck. OTP probe bounded at 30 seconds; proxy 30 seconds and client 35 seconds remain unchanged.
+      responses:
+        '200':
+          description: Probe completed, including OTP unavailable. Never cached.
+          headers:
+            Cache-Control: {schema: {type: string, const: no-store}}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [status, provider, version, checked_at, latency_milliseconds]
+                    properties:
+                      status: {type: string, enum: [AVAILABLE, UNAVAILABLE]}
+                      provider: {type: string, const: OTP}
+                      version: {type: string}
+                      checked_at: {type: string, format: date-time}
+                      latency_milliseconds: {type: number, minimum: 0}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '503': {$ref: '#/components/responses/ErrorResponse'}
   /api/v1/journeys/plan:
     post:
       tags: [Journeys]
@@ -183,9 +210,11 @@ paths:
     parameters:
       - {$ref: '#/components/parameters/JourneyId'}
       - {$ref: '#/components/parameters/JourneyOwner'}
+      - {$ref: '#/components/parameters/ActivationIdempotencyKey'}
     post:
       tags: [Journeys]
       operationId: activateJourney
+      description: Creates a new owner-scoped active journey instance. The Idempotency-Key identifies one logical activation; retries with the same key and equivalent plan return the same instance, while a different plan body under the same key is a 409 conflict.
       requestBody:
         required: true
         content:
@@ -194,6 +223,40 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/JourneyResponse'}
         '409': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/journeys/{journeyId}/boarding/{legSequence}:
+    parameters:
+      - {$ref: '#/components/parameters/JourneyId'}
+      - {$ref: '#/components/parameters/JourneyOwner'}
+      - {name: legSequence, in: path, required: true, schema: {type: integer, minimum: 0}}
+    post:
+      tags: [Journeys]
+      operationId: confirmLegBoarding
+      description: Explicit passenger boarding confirmation for the current non-walking leg. Confirmation must never be derived from device GPS.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JourneyConfirmationRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/JourneyResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/journeys/{journeyId}/alighting/{legSequence}:
+    parameters:
+      - {$ref: '#/components/parameters/JourneyId'}
+      - {$ref: '#/components/parameters/JourneyOwner'}
+      - {name: legSequence, in: path, required: true, schema: {type: integer, minimum: 0}}
+    post:
+      tags: [Journeys]
+      operationId: confirmLegAlighting
+      description: Explicit passenger alighting confirmation after boarding for the same non-walking leg. Confirmation must never be derived from device GPS.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JourneyConfirmationRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/JourneyResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
   /api/v1/journeys/{journeyId}/progress:
     parameters:
       - {$ref: '#/components/parameters/JourneyId'}
@@ -278,8 +341,29 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/RecoveryResponse'}
         '404': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/recoveries/{recoveryId}/accept:
+    parameters:
+      - {$ref: '#/components/parameters/RecoveryId'}
+      - {$ref: '#/components/parameters/JourneyOwner'}
+    post:
+      tags: [Recoveries]
+      operationId: acceptRecovery
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RecoveryAcceptRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RecoveryAcceptanceResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
+        '422': {$ref: '#/components/responses/ErrorResponse'}
   /api/v1/operator-recovery/analyses:
     post:
+      security: [{internalBearer: []}]
       tags: [Operator Recovery]
       operationId: createOperatorRecoveryAnalysis
       parameters:
@@ -291,20 +375,54 @@ paths:
             schema: {$ref: '#/components/schemas/OperatorAnalysisRequest'}
       responses:
         '201': {$ref: '#/components/responses/OperatorAnalysisResponse'}
+        '401': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
         '422': {$ref: '#/components/responses/ErrorResponse'}
   /api/v1/operator-recovery/analyses/{analysisId}:
     parameters:
       - {$ref: '#/components/parameters/AnalysisId'}
     get:
+      security: [{internalBearer: []}]
       tags: [Operator Recovery]
       operationId: getOperatorRecoveryAnalysis
       responses:
         '200': {$ref: '#/components/responses/OperatorAnalysisResponse'}
+        '401': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/copilot/research/messages:
+    post:
+      security: [{internalBearer: []}]
+      tags: [Copilot]
+      operationId: createResearchCopilotMessage
+      description: Authenticated RESEARCHER_OPERATOR or ADMIN only. Owner derives from principal user ID; request owner headers/body ignored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CopilotMessageRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/CopilotMessageResponse'}
+        '401': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/copilot/research/sessions/{sessionId}:
+    get:
+      security: [{internalBearer: []}]
+      tags: [Copilot]
+      operationId: getResearchCopilotSession
+      parameters:
+        - {name: sessionId, in: path, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
+      responses:
+        '200': {$ref: '#/components/responses/CopilotSessionResponse'}
+        '401': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
         '404': {$ref: '#/components/responses/ErrorResponse'}
   /api/v1/copilot/messages:
     post:
       tags: [Copilot]
       operationId: createCopilotMessage
+      parameters:
+        - {$ref: '#/components/parameters/JourneyOwner'}
       requestBody:
         required: true
         content:
@@ -313,6 +431,113 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/CopilotMessageResponse'}
         '400': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/copilot/sessions/{sessionId}:
+    get:
+      tags: [Copilot]
+      operationId: getCopilotSession
+      parameters:
+        - {name: sessionId, in: path, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
+        - {$ref: '#/components/parameters/JourneyOwner'}
+      responses:
+        '200': {$ref: '#/components/responses/CopilotSessionResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/passenger-reports:
+    post:
+      tags: [Journeys]
+      operationId: createPassengerReport
+      description: Owner-scoped passenger report submission. Reports are unverified evidence until controlled review.
+      parameters:
+        - {$ref: '#/components/parameters/JourneyOwner'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PassengerReportCreateRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/PassengerReportResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
+        '429':
+          description: Owner-scoped rolling quota reached; no report inserted. Retry-After is whole seconds until earliest slot.
+          headers:
+            Retry-After: {schema: {type: integer, minimum: 0}}
+          content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}
+    get:
+      tags: [Journeys]
+      operationId: listPassengerReportsByJourney
+      description: Owner-scoped refresh list of journey-associated passenger reports. Supply idempotency_key to reconcile a single previously submitted attempt without listing the journey.
+      parameters:
+        - {$ref: '#/components/parameters/JourneyOwner'}
+        - {name: active_journey_id, in: query, schema: {$ref: '#/components/schemas/Uuid'}}
+        - {name: idempotency_key, in: query, schema: {type: string, pattern: '^[A-Za-z0-9._:-]{8,128}$', minLength: 8, maxLength: 128}}
+      responses:
+        '200':
+          description: Journey list, or one report (null while absent) when idempotency_key is supplied. Absence does not prove rollback.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    oneOf:
+                      - {type: array, items: {$ref: '#/components/schemas/PassengerReport'}}
+                      - {$ref: '#/components/schemas/PassengerReport'}
+                      - {type: 'null'}
+                  meta: {$ref: '#/components/schemas/Meta'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/passenger-reports/{reportId}:
+    parameters:
+      - {name: reportId, in: path, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
+      - {$ref: '#/components/parameters/JourneyOwner'}
+    get:
+      tags: [Journeys]
+      operationId: getPassengerReport
+      responses:
+        '200': {$ref: '#/components/responses/PassengerReportResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/controlled/passenger-reports/{reportId}/verify:
+    post:
+      tags: [Journeys]
+      operationId: verifyControlledPassengerReport
+      description: Trusted operator-controlled verification of one passenger report into verified SIMULATED incident evidence. Production remains fail-closed.
+      parameters:
+        - {name: reportId, in: path, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ControlledPassengerReportVerifyRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/ControlledPassengerReportVerifyResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
+  /api/v1/controlled/passenger-reports/{reportId}/close:
+    post:
+      tags: [Journeys]
+      operationId: closeControlledPassengerReport
+      description: Dev/test-only terminal of a controlled SIMULATED passenger review (Resolved = condition cleared, Retracted = assertion withdrawn). Keeps acceptance repeatable without permanently blocking planning.
+      parameters:
+        - {name: reportId, in: path, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ControlledPassengerReportCloseRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/ControlledPassengerReportCloseResponse'}
+        '400': {$ref: '#/components/responses/ErrorResponse'}
+        '403': {$ref: '#/components/responses/ErrorResponse'}
+        '404': {$ref: '#/components/responses/ErrorResponse'}
+        '409': {$ref: '#/components/responses/ErrorResponse'}
   /api/v1/data-sources:
     get:
       tags: [Transit Data]
@@ -328,7 +553,7 @@ paths:
     get:
       tags: [Transit Data]
       operationId: searchTransitPlaces
-      description: Snapshot-scoped canonical stop and station search for passenger origin/destination selection.
+      description: Snapshot-scoped canonical stops/stations plus checksum-verified sparse local OSM address/POI nodes from matching spatial dataset. Not comprehensive geocoding; missing/corrupt local index preserves transit search.
       parameters:
         - {name: q, in: query, required: true, schema: {type: string, minLength: 2, maxLength: 80}}
         - {name: snapshot_id, in: query, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
@@ -385,6 +610,7 @@ components:
     RecoveryId: {name: recoveryId, in: path, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
     AnalysisId: {name: analysisId, in: path, required: true, schema: {$ref: '#/components/schemas/Uuid'}}
     IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 8, maxLength: 128}}
+    ActivationIdempotencyKey: {name: Idempotency-Key, in: header, required: true, description: Logical activation idempotency key; retries with the same key and equivalent plan replay one server-generated instance., schema: {type: string, minLength: 8, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$'}}
   responses:
     TransitPlaceCollectionResponse:
       description: Snapshot-scoped canonical transit places
@@ -425,6 +651,9 @@ components:
     JourneyPlanResponse:
       description: Candidate journeys
       content: {application/json: {schema: {$ref: '#/components/schemas/JourneyPlanEnvelope'}}}
+    RecoveryAcceptanceResponse:
+      description: Accepted recovery with immutable-plan pointer semantics
+      content: {application/json: {schema: {$ref: '#/components/schemas/RecoveryAcceptanceEnvelope'}}}
     JourneyResponse:
       description: Journey resource
       content: {application/json: {schema: {$ref: '#/components/schemas/JourneyEnvelope'}}}
@@ -443,6 +672,21 @@ components:
     CopilotMessageResponse:
       description: Grounded copilot response
       content: {application/json: {schema: {$ref: '#/components/schemas/CopilotMessageEnvelope'}}}
+    CopilotSessionResponse:
+      description: Owner-scoped copilot session audit, latest 100 messages
+      content: {application/json: {schema: {$ref: '#/components/schemas/CopilotSessionEnvelope'}}}
+    PassengerReportResponse:
+      description: Owner-scoped passenger report
+      content: {application/json: {schema: {$ref: '#/components/schemas/PassengerReportEnvelope'}}}
+    PassengerReportCollectionResponse:
+      description: Owner-scoped journey-associated passenger reports
+      content: {application/json: {schema: {$ref: '#/components/schemas/PassengerReportCollectionEnvelope'}}}
+    ControlledPassengerReportVerifyResponse:
+      description: Controlled verification outcome
+      content: {application/json: {schema: {$ref: '#/components/schemas/ControlledPassengerReportVerifyEnvelope'}}}
+    ControlledPassengerReportCloseResponse:
+      description: Controlled close outcome
+      content: {application/json: {schema: {$ref: '#/components/schemas/ControlledPassengerReportCloseEnvelope'}}}
     ErrorResponse:
       description: Machine-readable error
       content: {application/json: {schema: {$ref: '#/components/schemas/ErrorEnvelope'}}}
@@ -478,12 +722,12 @@ components:
         place_id: {$ref: '#/components/schemas/Uuid'}
         external_id: {type: string}
         name: {type: string}
-        kind: {type: string, enum: [STOP, STATION]}
-        product_mode: {type: string, enum: [TRANSJAKARTA, MIKROTRANS, KRL, MRT_JAKARTA, LRT_JAKARTA, LRT_JABODEBEK]}
+        kind: {type: string, enum: [STOP, STATION, ADDRESS, POI]}
+        product_mode: {type: [string, 'null'], enum: [TRANSJAKARTA, MIKROTRANS, KRL, MRT_JAKARTA, LRT_JAKARTA, LRT_JABODEBEK, null], description: Null only for ADDRESS/POI; canonical STOP/STATION retain transit mode.}
         latitude: {type: number, minimum: -90, maximum: 90}
         longitude: {type: number, minimum: -180, maximum: 180}
         dataset_version_id: {$ref: '#/components/schemas/Uuid'}
-        provenance: {type: string, enum: [OFFICIAL_TRANSJAKARTA_GTFS, OSM_OFFICIAL_CORROBORATED_TOPOLOGY]}
+        provenance: {type: string, enum: [OFFICIAL_TRANSJAKARTA_GTFS, OSM_OFFICIAL_CORROBORATED_TOPOLOGY, OSM_LOCAL_BOUNDED_INDEX]}
     TransitPlaceCollectionEnvelope:
       type: object
       required: [data, meta]
@@ -681,10 +925,31 @@ components:
         otp_stop_id: {type: [string, 'null']}
         latitude: {type: [number, 'null'], minimum: -90, maximum: 90}
         longitude: {type: [number, 'null'], minimum: -180, maximum: 180}
+    JourneyGeometry:
+      type: object
+      additionalProperties: false
+      required: [type, coordinates]
+      properties:
+        type: {type: string, enum: [LineString]}
+        coordinates: {type: array, minItems: 2, items: {type: array, minItems: 2, maxItems: 2, items: {type: number, description: '[longitude, latitude]'}}}
+    JourneyWalkingStep:
+      type: object
+      additionalProperties: false
+      required: [latitude, longitude, distance_meters, relative_direction, absolute_direction, street_name, bogus_name, area, stay_on]
+      properties:
+        latitude: {type: number, minimum: -90, maximum: 90}
+        longitude: {type: number, minimum: -180, maximum: 180}
+        distance_meters: {type: number, minimum: 0}
+        relative_direction: {type: [string, 'null']}
+        absolute_direction: {type: [string, 'null']}
+        street_name: {type: [string, 'null']}
+        bogus_name: {type: boolean}
+        area: {type: boolean}
+        stay_on: {type: boolean}
     JourneySegment:
       type: object
       additionalProperties: false
-      required: [sequence, mode, otp_mode, from, to, start_at, end_at, duration_seconds, distance_meters, route_id, route_short_name, trip_id, service_date, timing_precision, evidence_type, entity_bindings, operational_flags]
+      required: [sequence, mode, otp_mode, from, to, start_at, end_at, duration_seconds, distance_meters, route_id, route_short_name, trip_id, service_date, timing_precision, geometry, walking_steps, evidence_type, entity_bindings, operational_flags]
       properties:
         sequence: {type: integer, minimum: 0}
         mode: {type: string, enum: [WALK, TRANSJAKARTA, MIKROTRANS, KRL, MRT_JAKARTA, LRT_JAKARTA, LRT_JABODEBEK]}
@@ -700,6 +965,8 @@ components:
         trip_id: {type: [string, 'null']}
         service_date: {type: [string, 'null'], format: date}
         timing_precision: {type: string, enum: [EXACT_SCHEDULE, FREQUENCY_DERIVED, SOURCE_GTFS_WITH_FREQUENCIES, ESTIMATED]}
+        geometry: {anyOf: [{$ref: '#/components/schemas/JourneyGeometry'}, {type: 'null'}]}
+        walking_steps: {type: array, items: {$ref: '#/components/schemas/JourneyWalkingStep'}}
         evidence_type: {$ref: '#/components/schemas/EvidenceType'}
         entity_bindings: {type: array, items: {$ref: '#/components/schemas/JourneyEntityBinding'}}
         operational_flags: {type: array, items: {$ref: '#/components/schemas/JourneyOperationalFlag'}}
@@ -744,6 +1011,9 @@ components:
         activated_at: {type: string, format: date-time}
         completed_at: {type: [string, 'null'], format: date-time}
         plan_fingerprint: {type: string, pattern: '^[0-9a-f]{64}$'}
+        accepted_recovery_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}]}
+        accepted_before_segment_count: {type: [integer, 'null'], minimum: 0}
+        original_plan: {anyOf: [{$ref: '#/components/schemas/Journey'}, {type: 'null'}]}
         progress: {$ref: '#/components/schemas/JourneyProgress'}
         dependencies: {type: array, items: {$ref: '#/components/schemas/JourneyDependency'}}
     JourneyPlanEnvelope: {type: object, required: [data, meta], properties: {data: {type: array, items: {$ref: '#/components/schemas/Journey'}}, meta: {$ref: '#/components/schemas/Meta'}}}
@@ -755,21 +1025,32 @@ components:
       properties:
         selected_journey: {$ref: '#/components/schemas/Journey'}
         activated_at: {type: string, format: date-time}
+    JourneyConfirmationRequest:
+      type: object
+      additionalProperties: false
+      required: [confirmed_at]
+      properties:
+        confirmed_at: {type: string, format: date-time}
+        accepted_recovery_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}]}
     JourneyProgressRequest:
       type: object
       additionalProperties: false
       required: [completed_segment_count, recorded_at]
-      properties: {completed_segment_count: {type: integer, minimum: 0}, current_segment_sequence: {type: integer, minimum: 0}, recorded_at: {type: string, format: date-time}, current_position: {$ref: '#/components/schemas/GeoPoint'}}
+      properties: {completed_segment_count: {type: integer, minimum: 0}, current_segment_sequence: {type: integer, minimum: 0}, recorded_at: {type: string, format: date-time}, current_position: {$ref: '#/components/schemas/GeoPoint'}, accepted_recovery_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}]}}
     JourneyProgress:
       type: object
       additionalProperties: false
-      required: [completed_segment_count, current_segment_sequence, method, recorded_at, revision]
+      required: [completed_segment_count, current_segment_sequence, method, recorded_at, revision, boarding_confirmed_segment_sequence, boarding_confirmed_at, alighting_confirmed_segment_sequence, alighting_confirmed_at]
       properties:
         completed_segment_count: {type: integer, minimum: 0}
         current_segment_sequence: {type: [integer, 'null'], minimum: 0}
         method: {type: string, enum: [CONTROLLED_MANUAL]}
         recorded_at: {type: string, format: date-time}
         revision: {type: integer, minimum: 0}
+        boarding_confirmed_segment_sequence: {type: [integer, 'null'], minimum: 0}
+        boarding_confirmed_at: {type: [string, 'null'], format: date-time}
+        alighting_confirmed_segment_sequence: {type: [integer, 'null'], minimum: 0}
+        alighting_confirmed_at: {type: [string, 'null'], format: date-time}
     JourneyDependency:
       type: object
       additionalProperties: false
@@ -892,13 +1173,57 @@ components:
         rejoin_reason: {type: string}
         proposed_journey: {anyOf: [{$ref: '#/components/schemas/Journey'}, {type: 'null'}]}
         baseline_journey: {anyOf: [{$ref: '#/components/schemas/Journey'}, {type: 'null'}]}
+        accepted: {type: boolean}
+        accepted_at: {type: [string, 'null'], format: date-time}
+        accepted_journey_fingerprint: {type: [string, 'null'], pattern: '^[0-9a-f]{64}$'}
     RecoveryEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/Recovery'}, meta: {$ref: '#/components/schemas/Meta'}}}
-    OperatorAnalysisRequest:
+    RecoveryAcceptRequest:
       type: object
+      additionalProperties: false
+      required: [progress_revision]
+      properties:
+        progress_revision: {type: integer, minimum: 0}
+        accepted_at: {type: string, format: date-time}
+    RecoveryAcceptance:
+      type: object
+      additionalProperties: false
+      required: [recovery_id, original_journey_id, accepted_progress_revision, accepted_impact_id, accepted_state_transition_id, accepted_mobility_projection_version, accepted_journey_fingerprint, current_replacement_journey, accepted_at, original_plan_preserved, current_pointer_advanced]
+      properties:
+        recovery_id: {$ref: '#/components/schemas/Uuid'}
+        original_journey_id: {$ref: '#/components/schemas/Uuid'}
+        accepted_progress_revision: {type: integer, minimum: 0}
+        accepted_impact_id: {$ref: '#/components/schemas/Uuid'}
+        accepted_state_transition_id: {$ref: '#/components/schemas/Uuid'}
+        accepted_mobility_projection_version: {type: string}
+        accepted_journey_fingerprint: {type: string, pattern: '^[0-9a-f]{64}$'}
+        current_replacement_journey: {$ref: '#/components/schemas/Journey'}
+        accepted_at: {type: string, format: date-time}
+        original_plan_preserved: {type: boolean, enum: [true]}
+        current_pointer_advanced: {type: boolean, enum: [true]}
+    RecoveryAcceptanceEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/RecoveryAcceptance'}, meta: {$ref: '#/components/schemas/Meta'}}}
+    OperatorAnalysisRequest:
+      description: 'FR-007 bounded conservative split. Explicit closures are SIMULATED assumptions, never verified live dispatch. Maximum 1000 segments in one route direction.'
+      type: object
+      additionalProperties: false
       required: [route_id, network_snapshot_id, target_headway_seconds, turnaround_buffer_seconds]
       anyOf: [{required: [simulation_run_id]}, {required: [blocked_transit_segment_ids]}]
-      properties: {route_id: {$ref: '#/components/schemas/Uuid'}, simulation_run_id: {$ref: '#/components/schemas/Uuid'}, blocked_transit_segment_ids: {type: array, items: {$ref: '#/components/schemas/Uuid'}}, network_snapshot_id: {$ref: '#/components/schemas/Uuid'}, target_headway_seconds: {type: integer, minimum: 1}, turnaround_buffer_seconds: {type: integer, minimum: 0}, temporary_bridge_resource: {type: object, additionalProperties: true}}
+      properties:
+        route_id: {$ref: '#/components/schemas/Uuid'}
+        simulation_run_id: {$ref: '#/components/schemas/Uuid'}
+        blocked_transit_segment_ids: {type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: {$ref: '#/components/schemas/Uuid'}}
+        network_snapshot_id: {$ref: '#/components/schemas/Uuid'}
+        target_headway_seconds: {type: integer, minimum: 1, maximum: 7200}
+        turnaround_buffer_seconds: {type: integer, minimum: 0, maximum: 7200}
+        temporary_bridge_resource:
+          type: object
+          additionalProperties: false
+          required: [mode, vehicle_count, cycle_time_seconds]
+          properties:
+            mode: {type: string, pattern: '^[A-Z_]{2,40}$'}
+            vehicle_count: {type: integer, minimum: 0, maximum: 1000}
+            cycle_time_seconds: {type: integer, minimum: 1, maximum: 86400}
     OperatorAnalysis:
+      description: 'FR-007 outputs are decision support only, never autonomous commands. estimated_vehicle_requirement is null until validated bidirectional timing exists; bridge vehicles use formula ESTIMATED VEHICLE REQUIREMENT = ceil(cycle_seconds / target_headway_seconds). All outputs REQUIRE operator validation or are INSUFFICIENT_EVIDENCE.'
       type: object
       required: [analysis_id, route_id, upstream_service, downstream_service, unresolved_gap, estimated_vehicle_requirement, assumptions, validation_status]
       properties: {analysis_id: {$ref: '#/components/schemas/Uuid'}, route_id: {$ref: '#/components/schemas/Uuid'}, upstream_service: {type: array, items: {$ref: '#/components/schemas/Uuid'}}, downstream_service: {type: array, items: {$ref: '#/components/schemas/Uuid'}}, cut_point_candidate: {$ref: '#/components/schemas/Uuid'}, restart_point_candidate: {$ref: '#/components/schemas/Uuid'}, unresolved_gap: {type: object, additionalProperties: true}, estimated_vehicle_requirement: {type: integer, minimum: 0}, assumptions: {type: object, additionalProperties: true}, validation_status: {type: string, enum: [VALIDATED, REQUIRES_OPERATOR_VALIDATION, INSUFFICIENT_EVIDENCE]}, provenance: {$ref: '#/components/schemas/ProvenanceSummary'}}
@@ -906,11 +1231,79 @@ components:
     CopilotMessageRequest:
       type: object
       required: [message]
-      properties: {message: {type: string, minLength: 1, maxLength: 4000}, context_references: {type: array, items: {type: string}}}
+      properties:
+        message: {type: string, minLength: 1, maxLength: 4000}
+        context_references: {type: array, maxItems: 1, items: {type: string, description: 'Typed context: journey:<uuid>, recovery:<uuid>, scenario:<uuid>, simulation-run:<uuid>, or operator:<analysis uuid>. impact:<run uuid> remains legacy alias for simulation-run evidence. Research contexts require RESEARCHER_OPERATOR or ADMIN session.'}}
+        session_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}], description: Existing owner session; omitted creates one.}
+    CopilotSessionEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [session_id, created_at, expires_at, messages, history_limit]
+          properties:
+            session_id: {$ref: '#/components/schemas/Uuid'}
+            created_at: {type: string, format: date-time}
+            expires_at: {type: string, format: date-time}
+            history_limit: {type: integer, const: 100}
+            messages:
+              type: array
+              items:
+                type: object
+                required: [message_id, created_at, request_digest, answer, evidence_type, evidence_references, tool_result_references, fallback_status, tool_audit]
+                properties:
+                  message_id: {$ref: '#/components/schemas/Uuid'}
+                  created_at: {type: string, format: date-time}
+                  request_digest: {type: string, pattern: '^[0-9a-f]{64}$'}
+                  answer: {type: string}
+                  evidence_type: {$ref: '#/components/schemas/EvidenceType'}
+                  evidence_references: {type: array, items: {type: string}}
+                  tool_result_references: {type: array, items: {type: string}}
+                  fallback_status: {type: string, enum: [GROUNDED, DETERMINISTIC_FALLBACK, INSUFFICIENT_EVIDENCE]}
+                  tool_audit: {type: array, items: {type: object}}
+        meta: {$ref: '#/components/schemas/Meta'}
     CopilotMessage:
       type: object
       required: [message_id, answer, evidence_references, tool_result_references, fallback_status]
       properties: {message_id: {$ref: '#/components/schemas/Uuid'}, answer: {type: string}, evidence_references: {type: array, items: {type: string}}, tool_result_references: {type: array, items: {type: string}}, evidence_type: {$ref: '#/components/schemas/EvidenceType'}, fallback_status: {type: string, enum: [GROUNDED, DETERMINISTIC_FALLBACK, INSUFFICIENT_EVIDENCE]}}
+    PassengerReportCategory: {type: string, enum: [CLEANLINESS, CROWDING, ACCESSIBILITY, SAFETY, SERVICE, OTHER]}
+    ControlledReportOperationalState: {type: string, enum: [DEGRADED, DISRUPTED, UNAVAILABLE, RECOVERING]}
+    PassengerOperationalIncidentType: {type: string, enum: [STATION_CLOSURE, STOP_CLOSURE, SERVICE_SUSPENSION, SERVICE_TRUNCATION, ROUTE_DIVERSION, INFRASTRUCTURE_FAILURE, MANUAL_OPERATOR_INCIDENT, OTHER]}
+    PassengerReport:
+      type: object
+      additionalProperties: false
+      required: [report_id, active_journey_id, category, observed_at, received_at, mobility_entity_id, entity_type, description, source, verification_status, created_at]
+      properties: {report_id: {$ref: '#/components/schemas/Uuid'}, active_journey_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}]}, category: {$ref: '#/components/schemas/PassengerReportCategory'}, observed_at: {type: string, format: date-time}, received_at: {type: string, format: date-time}, mobility_entity_id: {$ref: '#/components/schemas/Uuid'}, entity_type: {type: string, enum: [STOP, STATION, ROUTE]}, description: {type: string, minLength: 1, maxLength: 2000, pattern: '^[^\p{Cc}\p{Cf}]+$'}, source: {type: string, enum: [PASSENGER_SELF_REPORT]}, verification_status: {type: string, enum: [REPORTED_UNVERIFIED, CONTROLLED_VERIFIED]}, created_at: {type: string, format: date-time}}
+    PassengerReportEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/PassengerReport'}, meta: {$ref: '#/components/schemas/Meta'}}}
+    PassengerReportCollectionEnvelope: {type: object, required: [data, meta], properties: {data: {type: array, items: {$ref: '#/components/schemas/PassengerReport'}}, meta: {$ref: '#/components/schemas/Meta'}}}
+    PassengerReportCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [category, observed_at, mobility_entity_id, entity_type, description]
+      properties: {active_journey_id: {anyOf: [{$ref: '#/components/schemas/Uuid'}, {type: 'null'}]}, category: {$ref: '#/components/schemas/PassengerReportCategory'}, observed_at: {type: string, format: date-time}, mobility_entity_id: {$ref: '#/components/schemas/Uuid'}, entity_type: {type: string, enum: [STOP, STATION, ROUTE]}, description: {type: string, minLength: 1, maxLength: 2000, pattern: '^[^\p{Cc}\p{Cf}]+$'}}
+    ControlledPassengerReportVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [operational_state, incident_type, reason]
+      properties: {operational_state: {$ref: '#/components/schemas/ControlledReportOperationalState'}, incident_type: {$ref: '#/components/schemas/PassengerOperationalIncidentType'}, reason: {type: string, minLength: 1, maxLength: 1000, pattern: '^[^\p{Cc}\p{Cf}]+$'}}
+    ControlledPassengerReportVerifyResponse:
+      type: object
+      additionalProperties: false
+      required: [report_id, verification_status, incident_id]
+      properties: {report_id: {$ref: '#/components/schemas/Uuid'}, verification_status: {type: string, enum: [CONTROLLED_VERIFIED]}, incident_id: {$ref: '#/components/schemas/Uuid'}, review_replay: {type: boolean}, evidence_status: {type: string}}
+    ControlledPassengerReportVerifyEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/ControlledPassengerReportVerifyResponse'}, meta: {$ref: '#/components/schemas/Meta'}}}
+    ControlledPassengerReportCloseRequest:
+      type: object
+      additionalProperties: false
+      required: [decision, reason]
+      properties: {decision: {type: string, enum: [RESOLVED, RETRACTED]}, reason: {type: string, minLength: 1, maxLength: 1000, pattern: '^[^\p{Cc}\p{Cf}]+$'}}
+    ControlledPassengerReportCloseResponse:
+      type: object
+      additionalProperties: false
+      required: [report_id, incident_id, lifecycle_status, decision]
+      properties: {report_id: {$ref: '#/components/schemas/Uuid'}, incident_id: {$ref: '#/components/schemas/Uuid'}, lifecycle_status: {type: string, enum: [RESOLVED, RETRACTED]}, decision: {type: string, enum: [RESOLVED, RETRACTED]}}
+    ControlledPassengerReportCloseEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/ControlledPassengerReportCloseResponse'}, meta: {$ref: '#/components/schemas/Meta'}}}
     CopilotMessageEnvelope: {type: object, required: [data, meta], properties: {data: {$ref: '#/components/schemas/CopilotMessage'}, meta: {$ref: '#/components/schemas/Meta'}}}
     ErrorCode: {type: string, enum: [VALIDATION_ERROR, DATA_COVERAGE_LIMITATION, NO_FEASIBLE_JOURNEY, NO_RECOVERY_PATH, SCENARIO_INVALID, SIMULATION_FAILED, UPSTREAM_UNAVAILABLE, AUTH_REQUIRED, FORBIDDEN, NOT_FOUND, CONFLICT, RATE_LIMITED, INTERNAL_ERROR]}
     ErrorEnvelope:

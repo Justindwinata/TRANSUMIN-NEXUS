@@ -3,8 +3,106 @@ import type { components } from '@transum-in/shared-types';
 export type Journey = components['schemas']['Journey'];
 export type JourneySegment = components['schemas']['JourneySegment'];
 export type JourneyAlert = components['schemas']['JourneyAlert'];
+export type RecoveryAcceptance = components['schemas']['RecoveryAcceptance'];
 export type Recovery = components['schemas']['Recovery'];
 export type TransitPlace = components['schemas']['TransitPlace'];
+
+export function recoveryComparisonSource(
+  active: Journey | null,
+  recovery: Recovery | null,
+  captured: { recoveryId: string; journey: Journey } | null,
+): Journey | null {
+  if (
+    !active ||
+    !recovery ||
+    active.journey_id !== recovery.original_journey_id
+  )
+    return null;
+  if (
+    captured?.recoveryId === recovery.recovery_id &&
+    captured.journey.journey_id === recovery.original_journey_id
+  )
+    return captured.journey;
+  // Accepted refresh has no proposal-source lineage, especially after R2+.
+  if (
+    recovery.accepted ||
+    active.accepted_recovery_id === recovery.recovery_id ||
+    active.progress?.revision !== recovery.progress_revision
+  )
+    return null;
+  return active;
+}
+
+export function canReplayPendingReport(
+  pendingKey: string | null,
+  localAttemptKey: string | null,
+  targetAvailable: boolean,
+): boolean {
+  return (
+    pendingKey !== null && pendingKey === localAttemptKey && targetAvailable
+  );
+}
+export type PassengerReport = Readonly<{
+  report_id: string;
+  active_journey_id: string | null;
+  category: string;
+  observed_at: string;
+  received_at: string;
+  mobility_entity_id: string;
+  entity_type: 'STOP' | 'STATION' | 'ROUTE';
+  description: string;
+  source: 'PASSENGER_SELF_REPORT';
+  verification_status: 'REPORTED_UNVERIFIED' | 'CONTROLLED_VERIFIED';
+  created_at: string;
+}>;
+
+export type PassengerReportTarget = Readonly<{
+  key: string;
+  id: string;
+  type: 'STOP' | 'STATION' | 'ROUTE';
+  label: string;
+  provenance: string;
+}>;
+
+export function remainingReportTargets(
+  journey: Journey,
+  completedCount: number,
+): PassengerReportTarget[] {
+  const remaining = journey.segments.filter(
+    (segment) => segment.sequence >= completedCount,
+  );
+  const byKey = new Map<string, PassengerReportTarget>();
+  for (const segment of remaining) {
+    for (const binding of segment.entity_bindings) {
+      if (
+        !binding.mobility_entity_id ||
+        !['STOP', 'STATION', 'ROUTE'].includes(binding.entity_type)
+      )
+        continue;
+      const key = `${binding.mobility_entity_id}:${binding.entity_type}`;
+      if (byKey.has(key)) continue;
+      const label =
+        binding.entity_type === 'ROUTE'
+          ? `${passengerRouteName(segment) || modeName(segment.mode)} · ${binding.entity_type}`
+          : `${segment.from.name} – ${segment.to.name} · ${binding.entity_type}`;
+      byKey.set(key, {
+        key,
+        id: binding.mobility_entity_id,
+        type: binding.entity_type as PassengerReportTarget['type'],
+        label,
+        provenance: binding.provenance_ref || 'provenance: tidak tersedia',
+      });
+    }
+  }
+  return [...byKey.values()];
+}
+
+export function isValidReportDescription(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.length >= 1 && trimmed.length <= 2000 && !/\p{Cc}/u.test(value)
+  );
+}
 
 const names: Record<JourneySegment['mode'], string> = {
   WALK: 'Walk',
@@ -22,6 +120,59 @@ export function modeName(mode: JourneySegment['mode']): string {
 
 export type JourneyPreference =
   'BALANCED' | 'FASTEST' | 'FEWEST_TRANSFERS' | 'LEAST_WALKING';
+
+const preferenceNames: Record<JourneyPreference, string> = {
+  BALANCED: 'Balanced',
+  FASTEST: 'Fastest',
+  FEWEST_TRANSFERS: 'Fewest transfers',
+  LEAST_WALKING: 'Least walking',
+};
+
+export type RankingFingerprint = Readonly<{
+  journey_id: string;
+  duration_seconds: number;
+  walking_distance_meters: number;
+  transfer_count: number;
+}>;
+
+export function rankingFingerprint(journey: Journey): RankingFingerprint {
+  return {
+    journey_id: journey.journey_id,
+    duration_seconds: journey.duration_seconds,
+    walking_distance_meters: journey.walking_distance_meters,
+    transfer_count: journey.transfer_count,
+  };
+}
+
+export function sameRankingCandidate(
+  left: RankingFingerprint,
+  right: RankingFingerprint,
+): boolean {
+  return (
+    left.journey_id === right.journey_id &&
+    left.duration_seconds === right.duration_seconds &&
+    left.walking_distance_meters === right.walking_distance_meters &&
+    left.transfer_count === right.transfer_count
+  );
+}
+
+// Honest note when the server returns the identical best candidate under two
+// distinct preferences: the calculations differ, the chosen journey does not.
+export function rankingExplanation(
+  previous: JourneyPreference,
+  next: JourneyPreference,
+  candidate: RankingFingerprint,
+  candidateCount: number,
+): string {
+  return (
+    `Server ranking reports the same best candidate for ${preferenceNames[previous]} and ${preferenceNames[next]} despite distinct calculations/candidate diversity. ` +
+    `Balanced uses normalized weighted duration/walking/transfers; other preferences use their named metric. ` +
+    `${candidateCount} returned candidate${candidateCount === 1 ? '' : 's'}; the full server candidate set is not shown. Metrics: ` +
+    `${formatDuration(candidate.duration_seconds)}, ` +
+    `${formatDistance(candidate.walking_distance_meters)} walking, ` +
+    `${transferLabel(candidate.transfer_count)}.`
+  );
+}
 
 export function easiestAmongShown(journeys: readonly Journey[]): string[] {
   const valid = journeys.filter(
@@ -199,7 +350,7 @@ export function samePassengerLeg(
 
 export function recoverySummary(recovery: Recovery): string {
   if (recovery.status !== 'COMPLETED' || !recovery.proposed_journey)
-    return 'No safe repair was found for the current conditions.';
+    return 'Tidak ada rute pengganti yang aman untuk kondisi saat ini. Rencana awal Anda tidak berubah.';
   const kept =
     recovery.preserved_segments.length + recovery.rejoined_segments.length;
   const parts = [

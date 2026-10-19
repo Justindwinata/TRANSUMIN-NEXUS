@@ -14,6 +14,7 @@ import {
   Patch,
   Post,
   Sse,
+  UseGuards,
 } from '@nestjs/common';
 import type { MessageEvent } from '@nestjs/common';
 import { map, type Observable } from 'rxjs';
@@ -31,8 +32,10 @@ import type {
   RoutingContext,
 } from '../domain/journey.js';
 import { mapAlternative } from './journey.controller.js';
+import { PassengerServiceGuard } from './passenger-service.guard.js';
 
 @Controller('journeys')
+@UseGuards(PassengerServiceGuard)
 export class ActiveJourneyController {
   constructor(
     @Inject(ActiveJourneyService)
@@ -45,15 +48,19 @@ export class ActiveJourneyController {
   async activate(
     @Param('journeyId') journeyId: string,
     @Headers('x-journey-owner') ownerRef: string | undefined,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body() body: { selected_journey?: unknown; activated_at?: string },
   ): Promise<Record<string, unknown>> {
     try {
       const owner = requiredOwner(ownerRef);
       const selected = parseSelectedJourney(body.selected_journey, journeyId);
+      if (!idempotencyKey || !/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyKey))
+        throw new BadRequestException('Valid Idempotency-Key is required.');
       const active = await this.journeys.activate({
         ownerRef: owner,
         selectedJourney: selected,
         activatedAt: body.activated_at,
+        idempotencyKey,
       });
       return envelope(mapActiveJourney(active));
     } catch (error) {
@@ -86,6 +93,7 @@ export class ActiveJourneyController {
       completed_segment_count?: number;
       current_segment_sequence?: number | null;
       recorded_at?: string;
+      accepted_recovery_id?: unknown;
     },
   ): Promise<Record<string, unknown>> {
     if (
@@ -102,6 +110,71 @@ export class ActiveJourneyController {
             completedLegCount: body.completed_segment_count,
             currentLegSequence: body.current_segment_sequence ?? null,
             recordedAt: body.recorded_at,
+            acceptedRecoveryId: routeId(body.accepted_recovery_id),
+          }),
+        ),
+      );
+    } catch (error) {
+      throw mapActiveJourneyError(error);
+    }
+  }
+
+  @Post(':journeyId/boarding/:legSequence')
+  async boarding(
+    @Param('journeyId') journeyId: string,
+    @Param('legSequence') legSequence: string,
+    @Headers('x-journey-owner') ownerRef: string | undefined,
+    @Body() body: { confirmed_at?: unknown; accepted_recovery_id?: unknown },
+  ): Promise<Record<string, unknown>> {
+    const sequence = Number(legSequence);
+    if (!Number.isInteger(sequence) || sequence < 0)
+      throw new BadRequestException(
+        'legSequence must be a non-negative integer.',
+      );
+    if (body.confirmed_at === undefined)
+      throw new BadRequestException('confirmed_at is required.');
+    const confirmedAt = timestamp(body.confirmed_at, 'confirmed_at');
+    try {
+      return envelope(
+        mapActiveJourney(
+          await this.journeys.confirmBoarding({
+            journeyId,
+            ownerRef: requiredOwner(ownerRef),
+            legSequence: sequence,
+            confirmedAt,
+            acceptedRecoveryId: routeId(body.accepted_recovery_id),
+          }),
+        ),
+      );
+    } catch (error) {
+      throw mapActiveJourneyError(error);
+    }
+  }
+
+  @Post(':journeyId/alighting/:legSequence')
+  async alighting(
+    @Param('journeyId') journeyId: string,
+    @Param('legSequence') legSequence: string,
+    @Headers('x-journey-owner') ownerRef: string | undefined,
+    @Body() body: { confirmed_at?: unknown; accepted_recovery_id?: unknown },
+  ): Promise<Record<string, unknown>> {
+    const sequence = Number(legSequence);
+    if (!Number.isInteger(sequence) || sequence < 0)
+      throw new BadRequestException(
+        'legSequence must be a non-negative integer.',
+      );
+    if (body.confirmed_at === undefined)
+      throw new BadRequestException('confirmed_at is required.');
+    const confirmedAt = timestamp(body.confirmed_at, 'confirmed_at');
+    try {
+      return envelope(
+        mapActiveJourney(
+          await this.journeys.confirmAlighting({
+            journeyId,
+            ownerRef: requiredOwner(ownerRef),
+            legSequence: sequence,
+            confirmedAt,
+            acceptedRecoveryId: routeId(body.accepted_recovery_id),
           }),
         ),
       );
@@ -179,13 +252,16 @@ export class ActiveJourneyController {
 
 function mapActiveJourney(journey: ActiveJourney): Record<string, unknown> {
   return {
-    ...mapAlternative(journey.originalPlan),
+    ...mapAlternative(journey.currentPlan ?? journey.originalPlan),
     journey_id: journey.journeyId,
     plan_journey_id: journey.originalPlan.journeyId,
     status: journey.lifecycleStatus,
     activated_at: journey.activatedAt,
     completed_at: journey.completedAt,
     plan_fingerprint: journey.planFingerprint,
+    accepted_recovery_id: journey.acceptedRecoveryId ?? null,
+    accepted_before_segment_count: journey.acceptedBeforeLegCount ?? null,
+    original_plan: mapAlternative(journey.originalPlan),
     progress: mapProgress(journey),
     dependencies: journey.dependencies.map((dependency) => ({
       dependency_id: dependency.dependencyId,
@@ -206,6 +282,12 @@ function mapProgress(journey: ActiveJourney) {
     method: journey.progress.method,
     recorded_at: journey.progress.recordedAt,
     revision: journey.progress.revision,
+    boarding_confirmed_segment_sequence:
+      journey.progress.boardingConfirmedLegSequence,
+    boarding_confirmed_at: journey.progress.boardingConfirmedAt,
+    alighting_confirmed_segment_sequence:
+      journey.progress.alightingConfirmedLegSequence,
+    alighting_confirmed_at: journey.progress.alightingConfirmedAt,
   };
 }
 
@@ -302,11 +384,100 @@ function parseLeg(value: Record<string, unknown>): JourneyLeg {
       'SOURCE_GTFS_WITH_FREQUENCIES',
       'ESTIMATED',
     ] as const),
+    geometry: parseGeometry(value.geometry),
+    walkingSteps: parseWalkingSteps(value.walking_steps),
     entityBindings: bindings,
     operationalFlags: array(value.operational_flags, 'operational_flags').map(
       (flag) => parseOperationalFlag(record(flag, 'operational_flag')),
     ),
   };
+}
+
+function parseWalkingSteps(value: unknown): JourneyLeg['walkingSteps'] {
+  if (value === null || value === undefined) return [];
+  if (!Array.isArray(value))
+    throw new BadRequestException(
+      'segment walking_steps must be an array or null.',
+    );
+  return value.map((item, index) => {
+    const step = record(item, `walking_steps[${index}]`);
+    const latitude = number(step.latitude, `walking_steps[${index}].latitude`);
+    const longitude = number(
+      step.longitude,
+      `walking_steps[${index}].longitude`,
+    );
+    const distanceMeters = number(
+      step.distance_meters,
+      `walking_steps[${index}].distance_meters`,
+    );
+    if (
+      latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180 ||
+      distanceMeters < 0
+    )
+      throw new BadRequestException('walking step coordinates are invalid.');
+    return {
+      latitude,
+      longitude,
+      distanceMeters,
+      relativeDirection: nullableString(
+        step.relative_direction,
+        `walking_steps[${index}].relative_direction`,
+      ),
+      absoluteDirection: nullableString(
+        step.absolute_direction,
+        `walking_steps[${index}].absolute_direction`,
+      ),
+      streetName: nullableString(
+        step.street_name,
+        `walking_steps[${index}].street_name`,
+      ),
+      bogusName: step.bogus_name === true,
+      area: step.area === true,
+      stayOn: step.stay_on === true,
+    };
+  });
+}
+
+function parseGeometry(value: unknown): JourneyLeg['geometry'] {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object')
+    throw new BadRequestException(
+      'segment geometry must be null or an object.',
+    );
+  const geometry = value as Record<string, unknown>;
+  if (geometry.type !== 'LineString' || !Array.isArray(geometry.coordinates))
+    throw new BadRequestException(
+      'segment geometry must be a GeoJSON LineString.',
+    );
+  if (geometry.coordinates.length > 10_000)
+    throw new BadRequestException(
+      'segment geometry must contain at most 10000 points.',
+    );
+  const coordinates = geometry.coordinates.map((coordinate) => {
+    if (
+      !Array.isArray(coordinate) ||
+      coordinate.length !== 2 ||
+      !Number.isFinite(coordinate[0]) ||
+      !Number.isFinite(coordinate[1])
+    )
+      throw new BadRequestException(
+        'segment geometry coordinates must be [longitude, latitude] pairs.',
+      );
+    const [longitude, latitude] = coordinate as [number, number];
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180)
+      throw new BadRequestException(
+        'segment geometry coordinates are out of range.',
+      );
+    return [longitude, latitude] as const;
+  });
+  if (coordinates.length < 2)
+    throw new BadRequestException(
+      'segment geometry must contain at least two points.',
+    );
+  return { type: 'LineString' as const, coordinates };
 }
 
 function parseBinding(
@@ -407,6 +578,13 @@ function point(value: unknown, field: string): GeoPoint {
   };
 }
 
+function timestamp(value: unknown, field: string): string {
+  const parsed = string(value, field);
+  if (!Number.isFinite(Date.parse(parsed)))
+    throw new BadRequestException(`${field} must be an ISO date-time.`);
+  return parsed;
+}
+
 function requiredOwner(value: string | undefined): string {
   if (value === undefined)
     throw new ForbiddenException('x-journey-owner is required.');
@@ -468,7 +646,21 @@ function mapActiveJourneyError(error: unknown): Error {
     return new NotFoundException(error.message);
   if (error.code === 'OWNER_SCOPE_MISMATCH')
     return new ForbiddenException(error.message);
-  if (error.code === 'ACTIVATION_CONFLICT')
+  if (error.code === 'ACTIVATION_CONFLICT' || error.code === 'STALE_ROUTE')
     return new ConflictException(error.message);
   return new BadRequestException(error.message);
+}
+
+function routeId(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (
+    typeof value !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    )
+  )
+    throw new BadRequestException(
+      'accepted_recovery_id must be a UUID or null.',
+    );
+  return value;
 }

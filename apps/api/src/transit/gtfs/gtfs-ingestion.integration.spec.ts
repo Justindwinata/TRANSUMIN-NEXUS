@@ -6,6 +6,7 @@ import { sql } from 'kysely';
 
 import { createDatabase } from '../../infrastructure/database/database.client.js';
 import { migrateToLatest } from '../../infrastructure/database/database.migrator.js';
+import { assertInvocationScratchDatabase } from '../../infrastructure/database/scratch.guard.js';
 import {
   getCanonicalCounts,
   GTFS_PIPELINE_VERSION,
@@ -162,6 +163,7 @@ async function clearFixtures(): Promise<void> {
 
 describe('FR-012 transactional GTFS canonical ingestion', () => {
   before(async () => {
+    await assertInvocationScratchDatabase(database);
     await migrateToLatest(database);
     await clearFixtures();
   });

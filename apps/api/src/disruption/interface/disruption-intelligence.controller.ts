@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -18,7 +19,7 @@ import {
   DisruptionIntelligenceService,
   type ScenarioActionInput,
 } from '../application/disruption-intelligence.service.js';
-import { InternalResearchGuard } from './internal-research.guard.js';
+import { AuthGuard, Roles, RolesGuard } from '../../auth/auth.guard.js';
 
 function envelope(data: unknown): Record<string, unknown> {
   return {
@@ -35,7 +36,8 @@ export class DisruptionIntelligenceController {
   ) {}
 
   @Post('disruption-events')
-  @UseGuards(InternalResearchGuard)
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('RESEARCHER_OPERATOR', 'ADMIN')
   async createEvent(
     @Body()
     body: {
@@ -45,10 +47,11 @@ export class DisruptionIntelligenceController {
       effective_to?: string | null;
       evidence_type: 'OBSERVED' | 'SIMULATED';
       provenance: { source_ids?: string[]; references?: string[] };
-    },
+    } | null,
   ): Promise<Record<string, unknown>> {
-    const sourceId = body.provenance.source_ids?.[0];
-    if (!sourceId) throw new Error('provenance.source_ids is required');
+    const sourceId = body?.provenance?.source_ids?.[0];
+    if (!body || !sourceId)
+      throw new BadRequestException('provenance.source_ids is required');
     const event = await this.intelligence.createControlledEvent({
       incidentType: body.event_type,
       sourceId,
@@ -74,6 +77,8 @@ export class DisruptionIntelligenceController {
   }
 
   @Get('disruption-events/:eventId/impact')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('RESEARCHER_OPERATOR', 'ADMIN')
   async disruptionImpact(
     @Param('eventId') eventId: string,
     @Query('snapshot_id') snapshotId: string,
@@ -86,7 +91,8 @@ export class DisruptionIntelligenceController {
   }
 
   @Post('scenarios')
-  @UseGuards(InternalResearchGuard)
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('RESEARCHER_OPERATOR', 'ADMIN')
   async createScenario(
     @Body()
     body: {
@@ -123,7 +129,8 @@ export class DisruptionIntelligenceController {
   }
 
   @Post('scenarios/:scenarioId/runs')
-  @UseGuards(InternalResearchGuard)
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles('RESEARCHER_OPERATOR', 'ADMIN')
   async createRun(
     @Param('scenarioId') scenarioId: string,
     @Headers('idempotency-key') idempotencyKey: string,

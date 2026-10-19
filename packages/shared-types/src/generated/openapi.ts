@@ -203,6 +203,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/journeys/planning-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Point-in-time OTP GraphQL reachability, not route feasibility or live-data freshness. Independent of database-only /health/ready. Read-only; no owner data or credentials returned. Passenger proxy requires its signed session and service identity. No automatic polling; client may explicitly recheck. OTP probe bounded at 30 seconds; proxy 30 seconds and client 35 seconds remain unchanged. */
+        get: operations["getPlanningHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/journeys/plan": {
         parameters: {
             query?: never;
@@ -246,6 +263,8 @@ export interface paths {
             header: {
                 /** @description Bounded opaque owner/session reference; not passenger PII. */
                 "x-journey-owner": components["parameters"]["JourneyOwner"];
+                /** @description Logical activation idempotency key; retries with the same key and equivalent plan replay one server-generated instance. */
+                "Idempotency-Key": components["parameters"]["ActivationIdempotencyKey"];
             };
             path: {
                 journeyId: components["parameters"]["JourneyId"];
@@ -254,7 +273,54 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** @description Creates a new owner-scoped active journey instance. The Idempotency-Key identifies one logical activation; retries with the same key and equivalent plan return the same instance, while a different plan body under the same key is a 409 conflict. */
         post: operations["activateJourney"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/journeys/{journeyId}/boarding/{legSequence}": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                journeyId: components["parameters"]["JourneyId"];
+                legSequence: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Explicit passenger boarding confirmation for the current non-walking leg. Confirmation must never be derived from device GPS. */
+        post: operations["confirmLegBoarding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/journeys/{journeyId}/alighting/{legSequence}": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                journeyId: components["parameters"]["JourneyId"];
+                legSequence: number;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Explicit passenger alighting confirmation after boarding for the same non-walking leg. Confirmation must never be derived from device GPS. */
+        post: operations["confirmLegAlighting"];
         delete?: never;
         options?: never;
         head?: never;
@@ -383,6 +449,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/recoveries/{recoveryId}/accept": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                recoveryId: components["parameters"]["RecoveryId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["acceptRecovery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operator-recovery/analyses": {
         parameters: {
             query?: never;
@@ -417,6 +504,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/copilot/research/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Authenticated RESEARCHER_OPERATOR or ADMIN only. Owner derives from principal user ID; request owner headers/body ignored. */
+        post: operations["createResearchCopilotMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/copilot/research/sessions/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getResearchCopilotSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/copilot/messages": {
         parameters: {
             query?: never;
@@ -427,6 +547,95 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["createCopilotMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/copilot/sessions/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getCopilotSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/passenger-reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Owner-scoped refresh list of journey-associated passenger reports. Supply idempotency_key to reconcile a single previously submitted attempt without listing the journey. */
+        get: operations["listPassengerReportsByJourney"];
+        put?: never;
+        /** @description Owner-scoped passenger report submission. Reports are unverified evidence until controlled review. */
+        post: operations["createPassengerReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/passenger-reports/{reportId}": {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                reportId: components["schemas"]["Uuid"];
+            };
+            cookie?: never;
+        };
+        get: operations["getPassengerReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/controlled/passenger-reports/{reportId}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Trusted operator-controlled verification of one passenger report into verified SIMULATED incident evidence. Production remains fail-closed. */
+        post: operations["verifyControlledPassengerReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/controlled/passenger-reports/{reportId}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Dev/test-only terminal of a controlled SIMULATED passenger review (Resolved = condition cleared, Retracted = assertion withdrawn). Keeps acceptance repeatable without permanently blocking planning. */
+        post: operations["closeControlledPassengerReport"];
         delete?: never;
         options?: never;
         head?: never;
@@ -456,7 +665,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Snapshot-scoped canonical stop and station search for passenger origin/destination selection. */
+        /** @description Snapshot-scoped canonical stops/stations plus checksum-verified sparse local OSM address/POI nodes from matching spatial dataset. Not comprehensive geocoding; missing/corrupt local index preserves transit search. */
         get: operations["searchTransitPlaces"];
         put?: never;
         post?: never;
@@ -554,14 +763,17 @@ export interface components {
             external_id: string;
             name: string;
             /** @enum {string} */
-            kind: "STOP" | "STATION";
-            /** @enum {string} */
-            product_mode: "TRANSJAKARTA" | "MIKROTRANS" | "KRL" | "MRT_JAKARTA" | "LRT_JAKARTA" | "LRT_JABODEBEK";
+            kind: "STOP" | "STATION" | "ADDRESS" | "POI";
+            /**
+             * @description Null only for ADDRESS/POI; canonical STOP/STATION retain transit mode.
+             * @enum {string|null}
+             */
+            product_mode: "TRANSJAKARTA" | "MIKROTRANS" | "KRL" | "MRT_JAKARTA" | "LRT_JAKARTA" | "LRT_JABODEBEK" | null;
             latitude: number;
             longitude: number;
             dataset_version_id: components["schemas"]["Uuid"];
             /** @enum {string} */
-            provenance: "OFFICIAL_TRANSJAKARTA_GTFS" | "OSM_OFFICIAL_CORROBORATED_TOPOLOGY";
+            provenance: "OFFICIAL_TRANSJAKARTA_GTFS" | "OSM_OFFICIAL_CORROBORATED_TOPOLOGY" | "OSM_LOCAL_BOUNDED_INDEX";
         };
         TransitPlaceCollectionEnvelope: {
             data: components["schemas"]["TransitPlace"][];
@@ -820,6 +1032,22 @@ export interface components {
             latitude?: number | null;
             longitude?: number | null;
         };
+        JourneyGeometry: {
+            /** @enum {string} */
+            type: "LineString";
+            coordinates: number[][];
+        };
+        JourneyWalkingStep: {
+            latitude: number;
+            longitude: number;
+            distance_meters: number;
+            relative_direction: string | null;
+            absolute_direction: string | null;
+            street_name: string | null;
+            bogus_name: boolean;
+            area: boolean;
+            stay_on: boolean;
+        };
         JourneySegment: {
             sequence: number;
             /** @enum {string} */
@@ -840,6 +1068,8 @@ export interface components {
             service_date: string | null;
             /** @enum {string} */
             timing_precision: "EXACT_SCHEDULE" | "FREQUENCY_DERIVED" | "SOURCE_GTFS_WITH_FREQUENCIES" | "ESTIMATED";
+            geometry: components["schemas"]["JourneyGeometry"] | null;
+            walking_steps: components["schemas"]["JourneyWalkingStep"][];
             evidence_type: components["schemas"]["EvidenceType"];
             entity_bindings: components["schemas"]["JourneyEntityBinding"][];
             operational_flags: components["schemas"]["JourneyOperationalFlag"][];
@@ -888,6 +1118,9 @@ export interface components {
             /** Format: date-time */
             completed_at?: string | null;
             plan_fingerprint?: string;
+            accepted_recovery_id?: components["schemas"]["Uuid"] | null;
+            accepted_before_segment_count?: number | null;
+            original_plan?: components["schemas"]["Journey"] | null;
             progress?: components["schemas"]["JourneyProgress"];
             dependencies?: components["schemas"]["JourneyDependency"][];
         };
@@ -904,12 +1137,18 @@ export interface components {
             /** Format: date-time */
             activated_at?: string;
         };
+        JourneyConfirmationRequest: {
+            /** Format: date-time */
+            confirmed_at: string;
+            accepted_recovery_id?: components["schemas"]["Uuid"] | null;
+        };
         JourneyProgressRequest: {
             completed_segment_count: number;
             current_segment_sequence?: number;
             /** Format: date-time */
             recorded_at: string;
             current_position?: components["schemas"]["GeoPoint"];
+            accepted_recovery_id?: components["schemas"]["Uuid"] | null;
         };
         JourneyProgress: {
             completed_segment_count: number;
@@ -919,6 +1158,12 @@ export interface components {
             /** Format: date-time */
             recorded_at: string;
             revision: number;
+            boarding_confirmed_segment_sequence: number | null;
+            /** Format: date-time */
+            boarding_confirmed_at: string | null;
+            alighting_confirmed_segment_sequence: number | null;
+            /** Format: date-time */
+            alighting_confirmed_at: string | null;
         };
         JourneyDependency: {
             dependency_id: components["schemas"]["Uuid"];
@@ -1046,11 +1291,41 @@ export interface components {
             rejoin_reason: string;
             proposed_journey: components["schemas"]["Journey"] | null;
             baseline_journey: components["schemas"]["Journey"] | null;
+            accepted?: boolean;
+            /** Format: date-time */
+            accepted_at?: string | null;
+            accepted_journey_fingerprint?: string | null;
         };
         RecoveryEnvelope: {
             data: components["schemas"]["Recovery"];
             meta: components["schemas"]["Meta"];
         };
+        RecoveryAcceptRequest: {
+            progress_revision: number;
+            /** Format: date-time */
+            accepted_at?: string;
+        };
+        RecoveryAcceptance: {
+            recovery_id: components["schemas"]["Uuid"];
+            original_journey_id: components["schemas"]["Uuid"];
+            accepted_progress_revision: number;
+            accepted_impact_id: components["schemas"]["Uuid"];
+            accepted_state_transition_id: components["schemas"]["Uuid"];
+            accepted_mobility_projection_version: string;
+            accepted_journey_fingerprint: string;
+            current_replacement_journey: components["schemas"]["Journey"];
+            /** Format: date-time */
+            accepted_at: string;
+            /** @enum {boolean} */
+            original_plan_preserved: true;
+            /** @enum {boolean} */
+            current_pointer_advanced: true;
+        };
+        RecoveryAcceptanceEnvelope: {
+            data: components["schemas"]["RecoveryAcceptance"];
+            meta: components["schemas"]["Meta"];
+        };
+        /** @description FR-007 bounded conservative split. Explicit closures are SIMULATED assumptions, never verified live dispatch. Maximum 1000 segments in one route direction. */
         OperatorAnalysisRequest: {
             route_id: components["schemas"]["Uuid"];
             simulation_run_id?: components["schemas"]["Uuid"];
@@ -1059,9 +1334,12 @@ export interface components {
             target_headway_seconds: number;
             turnaround_buffer_seconds: number;
             temporary_bridge_resource?: {
-                [key: string]: unknown;
+                mode: string;
+                vehicle_count: number;
+                cycle_time_seconds: number;
             };
         } | unknown | unknown;
+        /** @description FR-007 outputs are decision support only, never autonomous commands. estimated_vehicle_requirement is null until validated bidirectional timing exists; bridge vehicles use formula ESTIMATED VEHICLE REQUIREMENT = ceil(cycle_seconds / target_headway_seconds). All outputs REQUIRE operator validation or are INSUFFICIENT_EVIDENCE. */
         OperatorAnalysis: {
             analysis_id: components["schemas"]["Uuid"];
             route_id: components["schemas"]["Uuid"];
@@ -1087,6 +1365,33 @@ export interface components {
         CopilotMessageRequest: {
             message: string;
             context_references?: string[];
+            /** @description Existing owner session; omitted creates one. */
+            session_id?: components["schemas"]["Uuid"] | null;
+        };
+        CopilotSessionEnvelope: {
+            data: {
+                session_id: components["schemas"]["Uuid"];
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                expires_at: string;
+                /** @constant */
+                history_limit: 100;
+                messages: {
+                    message_id: components["schemas"]["Uuid"];
+                    /** Format: date-time */
+                    created_at: string;
+                    request_digest: string;
+                    answer: string;
+                    evidence_type: components["schemas"]["EvidenceType"];
+                    evidence_references: string[];
+                    tool_result_references: string[];
+                    /** @enum {string} */
+                    fallback_status: "GROUNDED" | "DETERMINISTIC_FALLBACK" | "INSUFFICIENT_EVIDENCE";
+                    tool_audit: Record<string, never>[];
+                }[];
+            };
+            meta: components["schemas"]["Meta"];
         };
         CopilotMessage: {
             message_id: components["schemas"]["Uuid"];
@@ -1096,6 +1401,83 @@ export interface components {
             evidence_type?: components["schemas"]["EvidenceType"];
             /** @enum {string} */
             fallback_status: "GROUNDED" | "DETERMINISTIC_FALLBACK" | "INSUFFICIENT_EVIDENCE";
+        };
+        /** @enum {string} */
+        PassengerReportCategory: "CLEANLINESS" | "CROWDING" | "ACCESSIBILITY" | "SAFETY" | "SERVICE" | "OTHER";
+        /** @enum {string} */
+        ControlledReportOperationalState: "DEGRADED" | "DISRUPTED" | "UNAVAILABLE" | "RECOVERING";
+        /** @enum {string} */
+        PassengerOperationalIncidentType: "STATION_CLOSURE" | "STOP_CLOSURE" | "SERVICE_SUSPENSION" | "SERVICE_TRUNCATION" | "ROUTE_DIVERSION" | "INFRASTRUCTURE_FAILURE" | "MANUAL_OPERATOR_INCIDENT" | "OTHER";
+        PassengerReport: {
+            report_id: components["schemas"]["Uuid"];
+            active_journey_id: components["schemas"]["Uuid"] | null;
+            category: components["schemas"]["PassengerReportCategory"];
+            /** Format: date-time */
+            observed_at: string;
+            /** Format: date-time */
+            received_at: string;
+            mobility_entity_id: components["schemas"]["Uuid"];
+            /** @enum {string} */
+            entity_type: "STOP" | "STATION" | "ROUTE";
+            description: string;
+            /** @enum {string} */
+            source: "PASSENGER_SELF_REPORT";
+            /** @enum {string} */
+            verification_status: "REPORTED_UNVERIFIED" | "CONTROLLED_VERIFIED";
+            /** Format: date-time */
+            created_at: string;
+        };
+        PassengerReportEnvelope: {
+            data: components["schemas"]["PassengerReport"];
+            meta: components["schemas"]["Meta"];
+        };
+        PassengerReportCollectionEnvelope: {
+            data: components["schemas"]["PassengerReport"][];
+            meta: components["schemas"]["Meta"];
+        };
+        PassengerReportCreateRequest: {
+            active_journey_id?: components["schemas"]["Uuid"] | null;
+            category: components["schemas"]["PassengerReportCategory"];
+            /** Format: date-time */
+            observed_at: string;
+            mobility_entity_id: components["schemas"]["Uuid"];
+            /** @enum {string} */
+            entity_type: "STOP" | "STATION" | "ROUTE";
+            description: string;
+        };
+        ControlledPassengerReportVerifyRequest: {
+            operational_state: components["schemas"]["ControlledReportOperationalState"];
+            incident_type: components["schemas"]["PassengerOperationalIncidentType"];
+            reason: string;
+        };
+        ControlledPassengerReportVerifyResponse: {
+            report_id: components["schemas"]["Uuid"];
+            /** @enum {string} */
+            verification_status: "CONTROLLED_VERIFIED";
+            incident_id: components["schemas"]["Uuid"];
+            review_replay?: boolean;
+            evidence_status?: string;
+        };
+        ControlledPassengerReportVerifyEnvelope: {
+            data: components["schemas"]["ControlledPassengerReportVerifyResponse"];
+            meta: components["schemas"]["Meta"];
+        };
+        ControlledPassengerReportCloseRequest: {
+            /** @enum {string} */
+            decision: "RESOLVED" | "RETRACTED";
+            reason: string;
+        };
+        ControlledPassengerReportCloseResponse: {
+            report_id: components["schemas"]["Uuid"];
+            incident_id: components["schemas"]["Uuid"];
+            /** @enum {string} */
+            lifecycle_status: "RESOLVED" | "RETRACTED";
+            /** @enum {string} */
+            decision: "RESOLVED" | "RETRACTED";
+        };
+        ControlledPassengerReportCloseEnvelope: {
+            data: components["schemas"]["ControlledPassengerReportCloseResponse"];
+            meta: components["schemas"]["Meta"];
         };
         CopilotMessageEnvelope: {
             data: components["schemas"]["CopilotMessage"];
@@ -1232,6 +1614,15 @@ export interface components {
                 "application/json": components["schemas"]["JourneyPlanEnvelope"];
             };
         };
+        /** @description Accepted recovery with immutable-plan pointer semantics */
+        RecoveryAcceptanceResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["RecoveryAcceptanceEnvelope"];
+            };
+        };
         /** @description Journey resource */
         JourneyResponse: {
             headers: {
@@ -1286,6 +1677,51 @@ export interface components {
                 "application/json": components["schemas"]["CopilotMessageEnvelope"];
             };
         };
+        /** @description Owner-scoped copilot session audit, latest 100 messages */
+        CopilotSessionResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["CopilotSessionEnvelope"];
+            };
+        };
+        /** @description Owner-scoped passenger report */
+        PassengerReportResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["PassengerReportEnvelope"];
+            };
+        };
+        /** @description Owner-scoped journey-associated passenger reports */
+        PassengerReportCollectionResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["PassengerReportCollectionEnvelope"];
+            };
+        };
+        /** @description Controlled verification outcome */
+        ControlledPassengerReportVerifyResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ControlledPassengerReportVerifyEnvelope"];
+            };
+        };
+        /** @description Controlled close outcome */
+        ControlledPassengerReportCloseResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ControlledPassengerReportCloseEnvelope"];
+            };
+        };
         /** @description Machine-readable error */
         ErrorResponse: {
             headers: {
@@ -1312,6 +1748,8 @@ export interface components {
         RecoveryId: components["schemas"]["Uuid"];
         AnalysisId: components["schemas"]["Uuid"];
         IdempotencyKey: string;
+        /** @description Logical activation idempotency key; retries with the same key and equivalent plan replay one server-generated instance. */
+        ActivationIdempotencyKey: string;
     };
     requestBodies: never;
     headers: never;
@@ -1544,6 +1982,40 @@ export interface operations {
             };
         };
     };
+    getPlanningHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Probe completed, including OTP unavailable. Never cached. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** @enum {string} */
+                            status: "AVAILABLE" | "UNAVAILABLE";
+                            /** @constant */
+                            provider: "OTP";
+                            version: string;
+                            /** Format: date-time */
+                            checked_at: string;
+                            latency_milliseconds: number;
+                        };
+                    };
+                };
+            };
+            403: components["responses"]["ErrorResponse"];
+            503: components["responses"]["ErrorResponse"];
+        };
+    };
     planJourneys: {
         parameters: {
             query?: never;
@@ -1587,6 +2059,8 @@ export interface operations {
             header: {
                 /** @description Bounded opaque owner/session reference; not passenger PII. */
                 "x-journey-owner": components["parameters"]["JourneyOwner"];
+                /** @description Logical activation idempotency key; retries with the same key and equivalent plan replay one server-generated instance. */
+                "Idempotency-Key": components["parameters"]["ActivationIdempotencyKey"];
             };
             path: {
                 journeyId: components["parameters"]["JourneyId"];
@@ -1601,6 +2075,52 @@ export interface operations {
         responses: {
             200: components["responses"]["JourneyResponse"];
             409: components["responses"]["ErrorResponse"];
+        };
+    };
+    confirmLegBoarding: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                journeyId: components["parameters"]["JourneyId"];
+                legSequence: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JourneyConfirmationRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["JourneyResponse"];
+            400: components["responses"]["ErrorResponse"];
+        };
+    };
+    confirmLegAlighting: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                journeyId: components["parameters"]["JourneyId"];
+                legSequence: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JourneyConfirmationRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["JourneyResponse"];
+            400: components["responses"]["ErrorResponse"];
         };
     };
     updateJourneyProgress: {
@@ -1731,6 +2251,32 @@ export interface operations {
             404: components["responses"]["ErrorResponse"];
         };
     };
+    acceptRecovery: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path: {
+                recoveryId: components["parameters"]["RecoveryId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecoveryAcceptRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["RecoveryAcceptanceResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            422: components["responses"]["ErrorResponse"];
+        };
+    };
     createOperatorRecoveryAnalysis: {
         parameters: {
             query?: never;
@@ -1747,6 +2293,8 @@ export interface operations {
         };
         responses: {
             201: components["responses"]["OperatorAnalysisResponse"];
+            401: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
             422: components["responses"]["ErrorResponse"];
         };
     };
@@ -1762,10 +2310,11 @@ export interface operations {
         requestBody?: never;
         responses: {
             200: components["responses"]["OperatorAnalysisResponse"];
+            401: components["responses"]["ErrorResponse"];
             404: components["responses"]["ErrorResponse"];
         };
     };
-    createCopilotMessage: {
+    createResearchCopilotMessage: {
         parameters: {
             query?: never;
             header?: never;
@@ -1779,7 +2328,193 @@ export interface operations {
         };
         responses: {
             200: components["responses"]["CopilotMessageResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+        };
+    };
+    getResearchCopilotSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: components["schemas"]["Uuid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["CopilotSessionResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+        };
+    };
+    createCopilotMessage: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CopilotMessageRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["CopilotMessageResponse"];
             400: components["responses"]["ErrorResponse"];
+        };
+    };
+    getCopilotSession: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                sessionId: components["schemas"]["Uuid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["CopilotSessionResponse"];
+            400: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+        };
+    };
+    listPassengerReportsByJourney: {
+        parameters: {
+            query?: {
+                active_journey_id?: components["schemas"]["Uuid"];
+                idempotency_key?: string;
+            };
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Journey list, or one report (null while absent) when idempotency_key is supplied. Absence does not prove rollback. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PassengerReport"][] | components["schemas"]["PassengerReport"] | null;
+                        meta: components["schemas"]["Meta"];
+                    };
+                };
+            };
+            400: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+        };
+    };
+    createPassengerReport: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PassengerReportCreateRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["PassengerReportResponse"];
+            400: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+            /** @description Owner-scoped rolling quota reached; no report inserted. Retry-After is whole seconds until earliest slot. */
+            429: {
+                headers: {
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getPassengerReport: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                reportId: components["schemas"]["Uuid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["PassengerReportResponse"];
+            400: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+        };
+    };
+    verifyControlledPassengerReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: components["schemas"]["Uuid"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControlledPassengerReportVerifyRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["ControlledPassengerReportVerifyResponse"];
+            400: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
+        };
+    };
+    closeControlledPassengerReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                reportId: components["schemas"]["Uuid"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControlledPassengerReportCloseRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["ControlledPassengerReportCloseResponse"];
+            400: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
         };
     };
     listDataSources: {

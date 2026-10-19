@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdir } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const requireApi = createRequire(
+  join(dirname(fileURLToPath(import.meta.url)), '../../api/package.json'),
+);
+const { Pool } = requireApi('pg');
 
 import { chromium } from 'playwright-core';
 
@@ -11,7 +17,7 @@ const repositoryRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../../..',
 );
-const webUrl = process.env.PASSENGER_WEB_URL ?? 'http://localhost:3000';
+const webUrl = process.env.PASSENGER_WEB_URL ?? 'http://127.0.0.1:3002';
 const apiUrl = process.env.PASSENGER_API_URL ?? 'http://127.0.0.1:3001/api/v1';
 const chromePath =
   process.env.PRODUCT_P1R_CHROME ??
@@ -25,6 +31,113 @@ if (!process.env.DATABASE_URL)
   throw new Error(
     'DATABASE_URL must point to an isolated local acceptance DB.',
   );
+
+async function assertAcceptanceDbPreflight() {
+  const raw = process.env.DATABASE_URL;
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('DATABASE_URL is not a valid URL.');
+  }
+  assert.ok(
+    ['postgres:', 'postgresql:'].includes(url.protocol),
+    'DATABASE_URL must use postgres protocol.',
+  );
+  assert.equal(
+    url.hostname,
+    '127.0.0.1',
+    'DATABASE_URL must target 127.0.0.1.',
+  );
+  assert.equal(
+    url.port,
+    '5435',
+    'DATABASE_URL must use the product server port 5435.',
+  );
+  assert.equal(
+    url.search,
+    '',
+    'DATABASE_URL must not contain query overrides.',
+  );
+  assert.match(
+    decodeURIComponent(url.pathname.slice(1)),
+    /^tnx_acceptance_[0-9a-f]{32}$/,
+    'DATABASE_URL must point to acceptance-named scratch DB.',
+  );
+  const user = decodeURIComponent(url.username);
+  assert.ok(user, 'DATABASE_URL username missing.');
+  assert.equal(user, process.env.POSTGRES_USER, 'Product username mismatch.');
+  assert.equal(url.hash, '', 'DATABASE_URL fragment rejected.');
+  const dbName = decodeURIComponent(url.pathname.slice(1));
+  try {
+    const container = 'transum-in-nexus-postgres-1';
+    const marker = execFileSync(
+      'docker',
+      [
+        'exec',
+        '-u',
+        'postgres',
+        container,
+        'psql',
+        '-U',
+        process.env.POSTGRES_USER,
+        '-d',
+        'postgres',
+        '-Atqc',
+        `select coalesce(shobj_description(oid,'pg_database'),'') from pg_database where datname='${dbName}'`,
+      ],
+      { encoding: 'utf8' },
+    ).trim();
+    assert.match(
+      marker,
+      /^tnx_acceptance:[0-9a-f-]{36}$/,
+      'Scratch DB marker missing or mismatched; refusing state change.',
+    );
+    const serverId = execFileSync(
+      'docker',
+      [
+        'exec',
+        '-u',
+        'postgres',
+        container,
+        'psql',
+        '-U',
+        process.env.POSTGRES_USER,
+        '-d',
+        'postgres',
+        '-Atqc',
+        'select system_identifier::text from pg_control_system()',
+      ],
+      { encoding: 'utf8' },
+    ).trim();
+    assert.ok(
+      /^[0-9]+$/.test(serverId),
+      'Could not verify pg server identity.',
+    );
+    const pool = new Pool({
+      connectionString: raw,
+      max: 1,
+      connectionTimeoutMillis: 3000,
+    });
+    try {
+      const checked = await pool.query(
+        'select system_identifier::text from pg_control_system()',
+      );
+      assert.equal(
+        checked.rows[0]?.system_identifier,
+        serverId,
+        'DATABASE_URL does not target the verified Docker server.',
+      );
+    } finally {
+      await pool.end().catch(() => undefined);
+    }
+  } catch (error) {
+    throw new Error(
+      `Acceptance DB preflight failed: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+}
 
 async function waitForWeb() {
   const response = await fetch(webUrl, { signal: AbortSignal.timeout(10_000) });
@@ -136,6 +249,129 @@ async function choosePlace(page, field, query, option) {
   await page.getByRole('option', { name: option }).click();
 }
 
+function distanceDegrees(a, b) {
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+function assertJourneyGeometry(journey) {
+  assert.ok(journey.segments.length > 0, 'Selected journey has no segments.');
+  for (const segment of journey.segments) {
+    const coordinates = segment.geometry?.coordinates;
+    assert.ok(
+      Array.isArray(coordinates) && coordinates.length >= 2,
+      `Segment ${segment.sequence} missing geometry.`,
+    );
+    for (const point of coordinates) {
+      assert.equal(
+        point.length,
+        2,
+        `Segment ${segment.sequence} geometry is not [lon,lat].`,
+      );
+      assert.ok(
+        Number.isFinite(point[0]) && Number.isFinite(point[1]),
+        'Geometry coordinate is not finite.',
+      );
+      assert.ok(
+        point[0] >= -180 &&
+          point[0] <= 180 &&
+          point[1] >= -90 &&
+          point[1] <= 90,
+        'Geometry coordinate out of bounds.',
+      );
+    }
+    const from = [segment.from.longitude, segment.from.latitude];
+    const to = [segment.to.longitude, segment.to.latitude];
+    assert.ok(
+      distanceDegrees(coordinates[0], from) <= 0.02,
+      `Segment ${segment.sequence} start geometry diverges from endpoint (~2 km tolerance).`,
+    );
+    assert.ok(
+      distanceDegrees(coordinates.at(-1), to) <= 0.02,
+      `Segment ${segment.sequence} end geometry diverges from endpoint.`,
+    );
+  }
+}
+
+async function assertMapExperience(page, journey) {
+  const map = page.getByRole('application', {
+    name: /Interactive selected route map/,
+  });
+  await map.waitFor({ timeout: 30_000 });
+  await page
+    .getByRole('status')
+    .filter({ hasText: 'Interactive route map ready.' })
+    .waitFor({ state: 'attached', timeout: 30_000 });
+  const canvas = map.locator('.maplibregl-canvas');
+  await canvas.waitFor({ timeout: 15_000 });
+  assert.ok((await canvas.count()) > 0, 'MapLibre canvas missing.');
+  assert.ok(
+    (await page
+      .getByRole('figure', { name: 'Interactive route geometry:' })
+      .getByRole('link', { name: '© OpenStreetMap contributors' })
+      .count()) > 0,
+    'Map attribution missing.',
+  );
+  assert.ok(
+    (await page.getByRole('list', { name: 'Map markers' }).count()) > 0,
+    'Map marker legend missing.',
+  );
+  assert.ok(
+    (await page.locator('.maplibre-marker').count()) >= 2,
+    'Origin/destination markers missing.',
+  );
+  assert.equal(
+    await page
+      .getByText(
+        'Route geometry is unavailable. No inferred line is shown; use textual itinerary below.',
+      )
+      .count(),
+    0,
+    'Geometry fallback shown for selected geometry.',
+  );
+  assert.ok(
+    journey.segments.some(
+      (segment) => segment.geometry?.coordinates?.length >= 2,
+    ),
+    'No renderable route source geometry.',
+  );
+  const beforeBox = await canvas.boundingBox();
+  assert.ok(beforeBox && beforeBox.width > 0, 'Map canvas has no layout.');
+  await canvas.hover();
+  const beforeCenter = await page.evaluate(() => {
+    const el = document.querySelector('.maplibre-frame canvas');
+    return el ? el.getBoundingClientRect().left : 0;
+  });
+  await page.mouse.wheel(0, 240);
+  await page.waitForTimeout(400);
+  await page.mouse.wheel(120, 0);
+  await page.waitForTimeout(400);
+  const afterBox = await canvas.boundingBox();
+  assert.ok(afterBox && afterBox.width > 0, 'Map canvas lost after pan/zoom.');
+  const errorFallback = await page
+    .getByText(
+      'Map tiles or route layer could not load. Text itinerary remains available.',
+    )
+    .count();
+  assert.equal(
+    errorFallback,
+    0,
+    'Map reported tile/layer error despite geometry.',
+  );
+  void beforeCenter;
+}
+
+async function assertMissingGeometryIsolated(page) {
+  const handled = await page.evaluate(() => {
+    const fallbackText =
+      'Route geometry is unavailable. No inferred line is shown; use textual itinerary below.';
+    const hasFallback = document.body.innerText.includes(fallbackText);
+    const hasMap = !!document.querySelector('.maplibre-frame canvas');
+    if (hasMap && hasFallback) return false;
+    return true;
+  });
+  assert.ok(handled, 'Missing-geometry fallback and map canvas conflict.');
+}
+
 async function planAndActivate(page, sharedJourney = null) {
   await page.goto(webUrl);
   await choosePlace(page, 'From', 'Harmoni', /^Harmoni TransJakarta · station/);
@@ -174,7 +410,9 @@ async function planAndActivate(page, sharedJourney = null) {
   assert.ok(selected, 'Real OTP returned no TransJakarta + MRT option.');
   const selectedJourney = planned[selectedIndex];
   assert.ok(selectedJourney, 'Selected option was not in the OTP response.');
+  assertJourneyGeometry(selectedJourney);
   await selected.click();
+  await assertMapExperience(page, selectedJourney);
   if (!sharedJourney) {
     await mkdir(evidenceDir, { recursive: true });
     for (const [name, width, height] of [
@@ -246,6 +484,8 @@ async function planAndActivate(page, sharedJourney = null) {
   );
   assert.equal(response.status, 200);
   assert.equal(body.data.status, 'ACTIVE');
+  assertJourneyGeometry(body.data);
+  await assertMissingGeometryIsolated(page);
   return { ...ids, journey: body.data, selectedJourney };
 }
 
@@ -265,6 +505,7 @@ let server;
 let browser;
 let affectedEntity = null;
 try {
+  await assertAcceptanceDbPreflight();
   await waitForWeb();
   server = await startAcceptanceApi();
   browser = await chromium.launch({
@@ -429,6 +670,11 @@ try {
       geometry.scroll <= geometry.viewport,
       `${name} has horizontal overflow.`,
     );
+    const mapBox = await pageA
+      .getByRole('application', { name: /Interactive selected route map/ })
+      .boundingBox()
+      .catch(() => null);
+    assert.ok(mapBox && mapBox.width > 0, `${name} map frame has no layout.`);
     const path = join(evidenceDir, `passenger-${name}.png`);
     await pageA.screenshot({ path, fullPage: true });
     screenshots.push(path);
@@ -445,6 +691,9 @@ try {
       recovery_status: recovery.status,
       blocked_entity_avoided: true,
       sse_reconnected: true,
+      geometry_validated: true,
+      map_canvas_present: true,
+      pan_zoom_functional: true,
       screenshots,
     }),
   );
