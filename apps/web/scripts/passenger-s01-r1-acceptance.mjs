@@ -4,6 +4,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 
+import { assertCp2Runtime } from './cp2-runtime-guard.mjs';
+
+// Fail closed: mutable harness, never target the shared product runtime.
+// Run via `pnpm data:browser:isolated --suite=<name>`; S01/S09 stay out of the
+// isolated set until their corridors are proven on the scratch corpus.
+await assertCp2Runtime();
+
 // S01-R1 coordinate-variant acceptance. Origin resolves dynamically through supported
 // Manggarai place search. Destination is the exact coordinate in
 // scripts/acceptance/v1-multi-od.mjs:42-50 (no POI). Full named Kemang Village /

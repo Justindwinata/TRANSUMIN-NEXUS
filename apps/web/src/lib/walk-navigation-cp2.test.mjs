@@ -488,6 +488,36 @@ describe('CP2 walking_steps navigation', () => {
     assert.equal(nextGuidance(recovered, 2, boarding).mode, 'ARRIVED');
   });
 
+  it('R7 fails closed on malformed coordinates, null steps, non-string street names', () => {
+    // SAMPLE: malformed OTP payloads must never throw; navigation degrades, never crashes.
+    assert.equal(
+      prepareWalkNavigation({
+        ...base,
+        geometry: {
+          ...base.geometry,
+          coordinates: [[106.81, -6.2], null, [106.811, -6.2]],
+        },
+      }),
+      null,
+    );
+    assert.equal(
+      prepareWalkNavigation({
+        ...base,
+        walking_steps: [base.walking_steps[0], null],
+      }).evidence,
+      'SCHEMATIC_GEOMETRY',
+    );
+    const nonStringStreet = prepareWalkNavigation({
+      ...base,
+      walking_steps: [
+        base.walking_steps[0],
+        { ...base.walking_steps[1], street_name: 123 },
+      ],
+    });
+    assert.equal(nonStringStreet.evidence, 'SCHEMATIC_GEOMETRY');
+    assert.deepEqual(nonStringStreet.maneuvers, []);
+  });
+
   it('scope changes on accepted recovery and geometry identity, without GPS storage', () => {
     const original = navigationScopeKey('j1', null, base);
     const recovery = navigationScopeKey('j1', 'r1', base);

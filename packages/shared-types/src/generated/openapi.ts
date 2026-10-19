@@ -203,6 +203,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/journeys/planning-health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Point-in-time OTP GraphQL reachability, not route feasibility or live-data freshness. Independent of database-only /health/ready. Read-only; no owner data or credentials returned. Passenger proxy requires its signed session and service identity. No automatic polling; client may explicitly recheck. OTP probe bounded at 30 seconds; proxy 30 seconds and client 35 seconds remain unchanged. */
+        get: operations["getPlanningHealth"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/journeys/plan": {
         parameters: {
             query?: never;
@@ -487,6 +504,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/copilot/research/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Authenticated RESEARCHER_OPERATOR or ADMIN only. Owner derives from principal user ID; request owner headers/body ignored. */
+        post: operations["createResearchCopilotMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/copilot/research/sessions/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getResearchCopilotSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/copilot/messages": {
         parameters: {
             query?: never;
@@ -503,6 +553,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/copilot/sessions/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getCopilotSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/passenger-reports": {
         parameters: {
             query?: never;
@@ -510,7 +576,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Owner-scoped refresh list of journey-associated passenger reports. */
+        /** @description Owner-scoped refresh list of journey-associated passenger reports. Supply idempotency_key to reconcile a single previously submitted attempt without listing the journey. */
         get: operations["listPassengerReportsByJourney"];
         put?: never;
         /** @description Owner-scoped passenger report submission. Reports are unverified evidence until controlled review. */
@@ -599,7 +665,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Snapshot-scoped canonical stop and station search for passenger origin/destination selection. */
+        /** @description Snapshot-scoped canonical stops/stations plus checksum-verified sparse local OSM address/POI nodes from matching spatial dataset. Not comprehensive geocoding; missing/corrupt local index preserves transit search. */
         get: operations["searchTransitPlaces"];
         put?: never;
         post?: never;
@@ -697,14 +763,17 @@ export interface components {
             external_id: string;
             name: string;
             /** @enum {string} */
-            kind: "STOP" | "STATION";
-            /** @enum {string} */
-            product_mode: "TRANSJAKARTA" | "MIKROTRANS" | "KRL" | "MRT_JAKARTA" | "LRT_JAKARTA" | "LRT_JABODEBEK";
+            kind: "STOP" | "STATION" | "ADDRESS" | "POI";
+            /**
+             * @description Null only for ADDRESS/POI; canonical STOP/STATION retain transit mode.
+             * @enum {string|null}
+             */
+            product_mode: "TRANSJAKARTA" | "MIKROTRANS" | "KRL" | "MRT_JAKARTA" | "LRT_JAKARTA" | "LRT_JABODEBEK" | null;
             latitude: number;
             longitude: number;
             dataset_version_id: components["schemas"]["Uuid"];
             /** @enum {string} */
-            provenance: "OFFICIAL_TRANSJAKARTA_GTFS" | "OSM_OFFICIAL_CORROBORATED_TOPOLOGY";
+            provenance: "OFFICIAL_TRANSJAKARTA_GTFS" | "OSM_OFFICIAL_CORROBORATED_TOPOLOGY" | "OSM_LOCAL_BOUNDED_INDEX";
         };
         TransitPlaceCollectionEnvelope: {
             data: components["schemas"]["TransitPlace"][];
@@ -1256,6 +1325,7 @@ export interface components {
             data: components["schemas"]["RecoveryAcceptance"];
             meta: components["schemas"]["Meta"];
         };
+        /** @description FR-007 bounded conservative split. Explicit closures are SIMULATED assumptions, never verified live dispatch. Maximum 1000 segments in one route direction. */
         OperatorAnalysisRequest: {
             route_id: components["schemas"]["Uuid"];
             simulation_run_id?: components["schemas"]["Uuid"];
@@ -1264,9 +1334,12 @@ export interface components {
             target_headway_seconds: number;
             turnaround_buffer_seconds: number;
             temporary_bridge_resource?: {
-                [key: string]: unknown;
+                mode: string;
+                vehicle_count: number;
+                cycle_time_seconds: number;
             };
         } | unknown | unknown;
+        /** @description FR-007 outputs are decision support only, never autonomous commands. estimated_vehicle_requirement is null until validated bidirectional timing exists; bridge vehicles use formula ESTIMATED VEHICLE REQUIREMENT = ceil(cycle_seconds / target_headway_seconds). All outputs REQUIRE operator validation or are INSUFFICIENT_EVIDENCE. */
         OperatorAnalysis: {
             analysis_id: components["schemas"]["Uuid"];
             route_id: components["schemas"]["Uuid"];
@@ -1292,6 +1365,33 @@ export interface components {
         CopilotMessageRequest: {
             message: string;
             context_references?: string[];
+            /** @description Existing owner session; omitted creates one. */
+            session_id?: components["schemas"]["Uuid"] | null;
+        };
+        CopilotSessionEnvelope: {
+            data: {
+                session_id: components["schemas"]["Uuid"];
+                /** Format: date-time */
+                created_at: string;
+                /** Format: date-time */
+                expires_at: string;
+                /** @constant */
+                history_limit: 100;
+                messages: {
+                    message_id: components["schemas"]["Uuid"];
+                    /** Format: date-time */
+                    created_at: string;
+                    request_digest: string;
+                    answer: string;
+                    evidence_type: components["schemas"]["EvidenceType"];
+                    evidence_references: string[];
+                    tool_result_references: string[];
+                    /** @enum {string} */
+                    fallback_status: "GROUNDED" | "DETERMINISTIC_FALLBACK" | "INSUFFICIENT_EVIDENCE";
+                    tool_audit: Record<string, never>[];
+                }[];
+            };
+            meta: components["schemas"]["Meta"];
         };
         CopilotMessage: {
             message_id: components["schemas"]["Uuid"];
@@ -1575,6 +1675,15 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["CopilotMessageEnvelope"];
+            };
+        };
+        /** @description Owner-scoped copilot session audit, latest 100 messages */
+        CopilotSessionResponse: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["CopilotSessionEnvelope"];
             };
         };
         /** @description Owner-scoped passenger report */
@@ -1873,6 +1982,40 @@ export interface operations {
             };
         };
     };
+    getPlanningHealth: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Probe completed, including OTP unavailable. Never cached. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            /** @enum {string} */
+                            status: "AVAILABLE" | "UNAVAILABLE";
+                            /** @constant */
+                            provider: "OTP";
+                            version: string;
+                            /** Format: date-time */
+                            checked_at: string;
+                            latency_milliseconds: number;
+                        };
+                    };
+                };
+            };
+            403: components["responses"]["ErrorResponse"];
+            503: components["responses"]["ErrorResponse"];
+        };
+    };
     planJourneys: {
         parameters: {
             query?: never;
@@ -2150,6 +2293,8 @@ export interface operations {
         };
         responses: {
             201: components["responses"]["OperatorAnalysisResponse"];
+            401: components["responses"]["ErrorResponse"];
+            409: components["responses"]["ErrorResponse"];
             422: components["responses"]["ErrorResponse"];
         };
     };
@@ -2165,10 +2310,11 @@ export interface operations {
         requestBody?: never;
         responses: {
             200: components["responses"]["OperatorAnalysisResponse"];
+            401: components["responses"]["ErrorResponse"];
             404: components["responses"]["ErrorResponse"];
         };
     };
-    createCopilotMessage: {
+    createResearchCopilotMessage: {
         parameters: {
             query?: never;
             header?: never;
@@ -2182,13 +2328,72 @@ export interface operations {
         };
         responses: {
             200: components["responses"]["CopilotMessageResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+        };
+    };
+    getResearchCopilotSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                sessionId: components["schemas"]["Uuid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["CopilotSessionResponse"];
+            401: components["responses"]["ErrorResponse"];
+            403: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
+        };
+    };
+    createCopilotMessage: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CopilotMessageRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["CopilotMessageResponse"];
             400: components["responses"]["ErrorResponse"];
+        };
+    };
+    getCopilotSession: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bounded opaque owner/session reference; not passenger PII. */
+                "x-journey-owner": components["parameters"]["JourneyOwner"];
+            };
+            path: {
+                sessionId: components["schemas"]["Uuid"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["CopilotSessionResponse"];
+            400: components["responses"]["ErrorResponse"];
+            404: components["responses"]["ErrorResponse"];
         };
     };
     listPassengerReportsByJourney: {
         parameters: {
-            query: {
-                active_journey_id: components["schemas"]["Uuid"];
+            query?: {
+                active_journey_id?: components["schemas"]["Uuid"];
+                idempotency_key?: string;
             };
             header: {
                 /** @description Bounded opaque owner/session reference; not passenger PII. */
@@ -2199,7 +2404,18 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: components["responses"]["PassengerReportCollectionResponse"];
+            /** @description Journey list, or one report (null while absent) when idempotency_key is supplied. Absence does not prove rollback. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PassengerReport"][] | components["schemas"]["PassengerReport"] | null;
+                        meta: components["schemas"]["Meta"];
+                    };
+                };
+            };
             400: components["responses"]["ErrorResponse"];
             403: components["responses"]["ErrorResponse"];
             404: components["responses"]["ErrorResponse"];
@@ -2227,7 +2443,16 @@ export interface operations {
             403: components["responses"]["ErrorResponse"];
             404: components["responses"]["ErrorResponse"];
             409: components["responses"]["ErrorResponse"];
-            429: components["responses"]["ErrorResponse"];
+            /** @description Owner-scoped rolling quota reached; no report inserted. Retry-After is whole seconds until earliest slot. */
+            429: {
+                headers: {
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     getPassengerReport: {

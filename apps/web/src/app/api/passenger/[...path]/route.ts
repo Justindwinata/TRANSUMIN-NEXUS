@@ -6,10 +6,12 @@ type Context = { params: Promise<{ path: string[] }> };
 
 const allowed = [
   /^transit\/places$/,
-  /^journeys\/plan$/,
+  /^journeys\/(?:plan|planning-health)$/,
   /^journeys\/[0-9a-f-]{36}(?:\/(?:activate|progress|status|alerts(?:\/stream)?|boarding\/\d+|alighting\/\d+))?$/i,
   /^recoveries(?:\/[0-9a-f-]{36}(?:\/accept)?)?$/i,
   /^passenger-reports(?:\/[0-9a-f-]{36})?$/i,
+  /^copilot\/messages$/,
+  /^copilot\/sessions\/[0-9a-f-]{36}$/i,
 ];
 
 const SESSION_COOKIE = 'transumin_proto_session';
@@ -242,11 +244,16 @@ async function forward(request: NextRequest, context: Context) {
         });
       return streamed;
     }
-    const responseHeaders = {
+    const responseHeaders = new Headers({
       'content-type':
         response.headers.get('content-type') ?? 'application/json',
       'cache-control': 'no-store',
-    };
+    });
+    if (resource === 'passenger-reports' && response.status === 429) {
+      const retryAfter = response.headers.get('retry-after');
+      if (retryAfter && /^(0|[1-9][0-9]*)$/.test(retryAfter))
+        responseHeaders.set('retry-after', retryAfter);
+    }
     const result = new NextResponse(await response.text(), {
       status: response.status,
       headers: responseHeaders,

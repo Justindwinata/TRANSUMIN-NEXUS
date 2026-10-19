@@ -3,6 +3,8 @@ import test from 'node:test';
 import { passengerApi } from './passenger-api.ts';
 
 import {
+  recoveryComparisonSource,
+  canReplayPendingReport,
   alertIsCurrent,
   easiestAmongShown,
   evidenceLabel,
@@ -24,6 +26,66 @@ import {
   toJakartaIso,
   transferLabel,
 } from './passenger.ts';
+
+test('recovery comparison requires captured proposal source; refreshed lineage stays honest', () => {
+  const original = { journey_id: 'j1', segments: [{ sequence: 2 }] };
+  const repaired = {
+    ...original,
+    accepted_recovery_id: 'r1',
+    segments: [{ sequence: 0 }],
+  };
+  const proposal = {
+    original_journey_id: 'j1',
+    recovery_id: 'r1',
+    progress_revision: 4,
+  };
+  assert.equal(
+    recoveryComparisonSource(repaired, proposal, {
+      recoveryId: 'r1',
+      journey: original,
+    }),
+    original,
+  );
+  assert.equal(recoveryComparisonSource(repaired, proposal, null), null);
+  const secondProposal = {
+    ...proposal,
+    recovery_id: 'r2',
+    progress_revision: 5,
+  };
+  const secondSource = { ...repaired, progress: { revision: 5 } };
+  assert.equal(
+    recoveryComparisonSource(secondSource, secondProposal, null),
+    secondSource,
+  );
+  const twiceRepaired = {
+    ...secondSource,
+    accepted_recovery_id: 'r2',
+    original_plan: original,
+  };
+  assert.equal(
+    recoveryComparisonSource(twiceRepaired, secondProposal, {
+      recoveryId: 'r2',
+      journey: secondSource,
+    }),
+    secondSource,
+  );
+  assert.equal(
+    recoveryComparisonSource(twiceRepaired, secondProposal, null),
+    null,
+  );
+  assert.equal(
+    recoveryComparisonSource(twiceRepaired, secondProposal, {
+      recoveryId: 'r1',
+      journey: original,
+    }),
+    null,
+  );
+  // Refreshed report keeps identity but has no in-memory payload proof.
+  assert.equal(canReplayPendingReport('k1', 'k1', true), true);
+  assert.equal(canReplayPendingReport('k1', null, true), false);
+  assert.equal(canReplayPendingReport('k1', 'k2', true), false);
+  assert.equal(canReplayPendingReport('k1', 'k1', false), false);
+});
 
 test('product modes remain operator-specific', () => {
   assert.equal(modeName('TRANSJAKARTA'), 'TransJakarta');

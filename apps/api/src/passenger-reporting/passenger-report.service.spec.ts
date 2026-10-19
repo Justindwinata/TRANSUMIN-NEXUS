@@ -79,6 +79,18 @@ describe('Passenger reporting boundary', () => {
     await assert.rejects(reports.list('owner-0001', 'not-a-uuid'), /UUID/);
   });
 
+  it('rejects malformed reconciliation lookups before database access', async () => {
+    const reports = service();
+    await assert.rejects(
+      reports.lookupByIdempotencyKey('bad owner!', 'key-abcdef01'),
+      /Invalid owner/,
+    );
+    await assert.rejects(
+      reports.lookupByIdempotencyKey('owner-0001', 'short'),
+      /idempotency_key/,
+    );
+  });
+
   it('requires deterministic controlled review input', async () => {
     const reports = service();
     await assert.rejects(

@@ -2,7 +2,7 @@
 // Local full scan (exact secret values): requires an ignored .env and built web+api output.
 // CI scan: no secrets present, so exact-value matching is skipped and category scanning runs.
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, lstatSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -84,7 +84,18 @@ const tracked = execFileSync(
   .toString()
   .split('\0')
   .filter(Boolean)
-  .map((p) => path.join(root, p));
+  .map((p) => path.join(root, p))
+  .filter((p) => {
+    const relative = path.relative(root, p);
+    if (relative === 'data/raw' || relative === 'data/processed') {
+      try {
+        if (lstatSync(p).isSymbolicLink()) return false;
+      } catch {
+        // Let the scanner read the path and fail closed below.
+      }
+    }
+    return true;
+  });
 const failures = [];
 function scan(group, paths) {
   for (const p of paths) {

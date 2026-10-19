@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statfsSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { createServer, request as httpsRequest } from 'node:https';
+import { createServer as createHttpServer, request } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { Pool } from 'pg';
@@ -17,13 +27,57 @@ const SPATIAL_VERSION = 'e6aa5be0-0cf4-5e33-8581-696af9a2045f';
 const RAIL_VERSION = '19dde3d7-a359-5457-bea5-a6db1704543d';
 
 type Identity = { name: string; oid: number; owner: string; marker: string };
+type SuiteKey = keyof typeof SUITE_SCRIPTS;
+/** Stage G: owned web/API processes restart while browser stays open; DB untouched. */
+const productionRestart = process.argv.includes('--restart-production');
+const exactGrants = process.argv.includes('--exact-runtime-grants');
+const productionWeb =
+  productionRestart || process.argv.includes('--production-web');
+const RESTART_TLS_PORT = '3306';
+/** Mutable stand-alone browser suites and the shared isolated browser framework. */
+const SUITE_SCRIPTS = {
+  CP2: 'apps/web/scripts/passenger-cp2-walk-navigation-acceptance.mjs',
+  CP3: 'apps/web/scripts/passenger-cp3-recovery-navigation-acceptance.mjs',
+  V20: 'apps/web/scripts/passenger-r1-full-workflow.mjs',
+  MOBILE: 'apps/web/scripts/passenger-mobile-v20-acceptance.mjs',
+  FINAL: 'apps/web/scripts/passenger-final-supplement-acceptance.mjs',
+  COMBINED: 'apps/web/scripts/passenger-combined-acceptance.mjs',
+  PLACE_NEGATIVE:
+    'apps/web/scripts/passenger-place-search-negative-acceptance.mjs',
+  NEG: 'apps/web/scripts/passenger-endpoint-negative-acceptance.mjs',
+  M5: 'apps/web/scripts/passenger-report-m5-acceptance.mjs',
+  M6: 'apps/web/scripts/passenger-recovery-m6-acceptance.mjs',
+  M7: 'apps/web/scripts/passenger-integrated-m7-acceptance.mjs',
+  REPORTING_RATE_LIMIT:
+    'apps/web/scripts/passenger-report-rate-limit-acceptance.mjs',
+  TIMEOUT: 'apps/web/scripts/passenger-report-timeout-acceptance.mjs',
+  GPS: 'apps/web/scripts/passenger-gps-browser-acceptance.mjs',
+  SMOKE: 'apps/web/scripts/passenger-smoke.mjs',
+  MODES: 'apps/web/scripts/passenger-modes-browser-acceptance.mjs',
+  OTP: 'apps/web/scripts/passenger-otp-degraded-acceptance.mjs',
+  S09: 'apps/web/scripts/passenger-s09-no-path-r1-acceptance.mjs',
+  ADDR: 'apps/web/scripts/passenger-address-poi-acceptance.mjs',
+  COPILOT: 'apps/web/scripts/passenger-copilot-acceptance.mjs',
+} as const;
 const recoverySuite = process.argv.includes('--recovery');
+const suiteFlags = process.argv
+  .filter((argument) => argument.startsWith('--suite='))
+  .flatMap((argument) => argument.slice('--suite='.length).split(','))
+  .map((key) => key.trim().toUpperCase())
+  .map((key) => (key === 'S14' ? 'V20' : key) as SuiteKey);
+for (const key of suiteFlags)
+  assert.ok(
+    key in SUITE_SCRIPTS,
+    `Unknown suite ${key}; assignable: ${Object.keys(SUITE_SCRIPTS).join(',')}`,
+  );
+const selectedSuites: readonly SuiteKey[] = suiteFlags.length
+  ? suiteFlags
+  : [recoverySuite ? 'CP3' : 'CP2'];
 const id = randomUUID();
 const database = `tnx_cp2_${id.replaceAll('-', '')}`;
 const marker = `tnx_cp2:${id}`;
-const browserScript = recoverySuite
-  ? 'apps/web/scripts/passenger-cp3-recovery-navigation-acceptance.mjs'
-  : 'apps/web/scripts/passenger-cp2-walk-navigation-acceptance.mjs';
+const runtimeRole = `tnx_passenger_${id.replaceAll('-', '').slice(0, 48)}`;
+const runtimePassword = randomBytes(32).toString('hex');
 
 function q(value: string) {
   return `"${value.replaceAll('"', '""')}"`;
@@ -101,10 +155,146 @@ async function stop(child: ChildProcess | undefined) {
   } catch {
     child.kill('SIGTERM');
   }
-  await Promise.race([
-    new Promise<void>((resolve) => child.once('close', () => resolve())),
-    new Promise<void>((resolve) => setTimeout(resolve, 10000)),
+  const closed = await Promise.race([
+    new Promise<boolean>((resolve) => child.once('close', () => resolve(true))),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 8000)),
   ]);
+  if (!closed) {
+    try {
+      process.kill(-child.pid!, 'SIGKILL');
+    } catch {
+      child.kill('SIGKILL');
+    }
+    await Promise.race([
+      new Promise<void>((resolve) => child.once('close', () => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+    ]);
+  }
+}
+function forwardHttps(
+  options: { key: Buffer; cert: Buffer },
+  targetPort: number,
+) {
+  return createServer(options, (incoming, outgoing) => {
+    const upstream = request(
+      {
+        hostname: '127.0.0.1',
+        port: targetPort,
+        path: incoming.url,
+        method: incoming.method,
+        headers: incoming.headers,
+      },
+      (response) => {
+        outgoing.writeHead(response.statusCode ?? 502, response.headers);
+        response.pipe(outgoing);
+      },
+    );
+    upstream.on('error', () => outgoing.writeHead(502).end());
+    incoming.pipe(upstream);
+  });
+}
+async function otpRelay(target: string) {
+  const upstream = new URL(target);
+  assert.ok(['http:', 'https:'].includes(upstream.protocol));
+  const controlPath = `/__control/${randomUUID()}`;
+  let mode: 'healthy' | 'unavailable' | 'hang' = 'healthy';
+  const relay = createHttpServer((incoming, outgoing) => {
+    if (incoming.url === controlPath && incoming.method === 'POST') {
+      let body = '';
+      incoming.setEncoding('utf8');
+      incoming.on('data', (chunk) => (body += chunk));
+      incoming.on('end', () => {
+        const requested = JSON.parse(body).mode;
+        assert.ok(['healthy', 'unavailable', 'hang'].includes(requested));
+        mode = requested;
+        outgoing.writeHead(204).end();
+      });
+      return;
+    }
+    if (mode === 'unavailable') {
+      outgoing
+        .writeHead(503, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ error: 'OTP relay unavailable' }));
+      return;
+    }
+    if (mode === 'hang') return;
+    const transport = upstream.protocol === 'https:' ? httpsRequest : request;
+    const proxy = transport(
+      {
+        protocol: upstream.protocol,
+        hostname: upstream.hostname,
+        port: upstream.port,
+        path: incoming.url,
+        method: incoming.method,
+        headers: incoming.headers,
+      },
+      (response) => {
+        outgoing.writeHead(response.statusCode ?? 502, response.headers);
+        response.pipe(outgoing);
+      },
+    );
+    proxy.on('error', () => {
+      if (!outgoing.headersSent) outgoing.writeHead(502);
+      outgoing.end();
+    });
+    incoming.pipe(proxy);
+  });
+  await new Promise<void>((resolve) => relay.listen(0, '127.0.0.1', resolve));
+  const address = relay.address();
+  assert.ok(address && typeof address === 'object');
+  return {
+    relay,
+    endpoint: `http://127.0.0.1:${address.port}${upstream.pathname}`,
+    controlPath,
+    control: async (next: 'healthy' | 'unavailable' | 'hang') => {
+      await fetch(`http://127.0.0.1:${address.port}${controlPath}`, {
+        method: 'POST',
+        body: JSON.stringify({ mode: next }),
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+    cleanup: () => new Promise<void>((resolve) => relay.close(() => resolve())),
+  };
+}
+
+async function productionTlsProxy(port: number, targetPort: number) {
+  const dir = mkdtempSync(`${tmpdir()}/cp2-stage-g-tls-`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const key = `${dir}/key.pem`;
+  const cert = `${dir}/cert.pem`;
+  execFileSync(
+    'openssl',
+    [
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-days',
+      '1',
+      '-subj',
+      '/CN=127.0.0.1',
+      '-keyout',
+      key,
+      '-out',
+      cert,
+    ],
+    { stdio: 'ignore' },
+  );
+  const proxy = forwardHttps(
+    { key: readFileSync(key), cert: readFileSync(cert) },
+    targetPort,
+  );
+  await new Promise<void>((resolve) =>
+    proxy.listen(port, '127.0.0.1', resolve),
+  );
+  return {
+    proxy,
+    cleanup: () => {
+      proxy.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
 }
 
 async function main() {
@@ -118,40 +308,177 @@ async function main() {
   assert.equal(env.POSTGRES_PORT, '5435');
   assert.equal(env.POSTGRES_DB, SOURCE);
   assert.ok(env.POSTGRES_USER && env.POSTGRES_PASSWORD);
-  const base = new URL(
+  let base = new URL(
     `postgresql://${encodeURIComponent(env.POSTGRES_USER)}:${encodeURIComponent(env.POSTGRES_PASSWORD)}@127.0.0.1:5435/${SOURCE}`,
   );
+  const sourceBase = new URL(base);
+  const ownedContainer = `tnx-passenger-${id}`;
+  let ownedContainerId: string | undefined;
+  const containerPassword = randomBytes(32).toString('hex');
+  const docker = (args: string[], input?: string | Buffer) =>
+    execFileSync('docker', args, {
+      input,
+      env: {
+        ...env,
+        POSTGRES_PASSWORD: containerPassword,
+        PGPASSWORD: containerPassword,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 120000,
+      maxBuffer: 256 * 1024 ** 2,
+    });
+  const psql = (name: string, sql: string, variables: string[] = []) =>
+    docker(
+      [
+        'exec',
+        '-i',
+        '-e',
+        'PGPASSWORD',
+        ownedContainer,
+        'psql',
+        '-h',
+        '127.0.0.1',
+        '-X',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-U',
+        'postgres',
+        '-d',
+        name,
+        ...variables,
+      ],
+      sql,
+    );
+  const ownedDataDirectory = exactGrants
+    ? mkdtempSync(
+        `${process.env.TNX_DOCKER_BIND_ROOT ?? tmpdir()}/tnx-passenger-${id}-`,
+      )
+    : undefined;
+  if (exactGrants) {
+    docker([
+      'run',
+      '--mount',
+      `type=bind,source=${ownedDataDirectory},target=/var/lib/postgresql/data`,
+      '-d',
+      '--name',
+      ownedContainer,
+      '--label',
+      `tnx.passenger=${id}`,
+      '--memory=768m',
+      '--cpus=1',
+      '-e',
+      'POSTGRES_PASSWORD',
+      '-p',
+      '127.0.0.1::5432',
+      'transum-in-nexus/postgis:17.11-3.6',
+    ]);
+    const inspected = JSON.parse(
+      docker(['inspect', ownedContainer]).toString(),
+    )[0];
+    assert.equal(inspected.Config.Labels['tnx.passenger'], id);
+    ownedContainerId = inspected.Id;
+    // Image entrypoint initializes owned bind mount, then drops to postgres.
+    assert.equal(inspected.Config.User, '');
+    const mount = inspected.Mounts.find(
+      (entry: { Destination: string }) =>
+        entry.Destination === '/var/lib/postgresql/data',
+    );
+    assert.equal(mount.Type, 'bind');
+    assert.equal(mount.Source, ownedDataDirectory);
+    assert.equal(mount.RW, true);
+    console.log(
+      JSON.stringify({
+        owned_storage: {
+          source: ownedDataDirectory,
+          destination: mount.Destination,
+          type: mount.Type,
+          free_bytes:
+            statfsSync(ownedDataDirectory!).bavail *
+            statfsSync(ownedDataDirectory!).bsize,
+          reserve_bytes: 1024 ** 3,
+        },
+      }),
+    );
+    const binding = inspected.NetworkSettings.Ports['5432/tcp'][0];
+    assert.equal(binding.HostIp, '127.0.0.1');
+    base = new URL(
+      `postgresql://postgres:${containerPassword}@127.0.0.1:${binding.HostPort}/${SOURCE}`,
+    );
+    console.log(
+      JSON.stringify({
+        container: ownedContainer,
+        id: ownedContainerId,
+        marker,
+        port: binding.HostPort,
+      }),
+    );
+    let lastErr: string;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        psql('postgres', 'select 1');
+        break;
+      } catch (error) {
+        lastErr = String((error as Error).message ?? error).slice(0, 800);
+        if (attempt >= 120) {
+          try {
+            const logs = docker(['logs', ownedContainer])
+              .toString()
+              .slice(-4000);
+            console.error(
+              JSON.stringify({
+                owned_ready_failed: lastErr,
+                docker_logs_tail: logs,
+              }),
+            );
+          } catch {
+            // Container may already be gone; readiness failure remains authoritative.
+          }
+          assert.fail(`Owned database readiness deadline: ${lastErr}`);
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+  }
   const admin = new Pool({
     connectionString: urlFor(base, 'postgres'),
     max: 1,
   });
-  const source = new Pool({ connectionString: base.toString(), max: 2 });
+  const source = new Pool({
+    connectionString: sourceBase.toString(),
+    max: 1,
+    options: '-c default_transaction_read_only=on',
+  });
   let target: Pool | undefined;
   let scratch: Identity | null = null;
   let api: ChildProcess | undefined;
   let web: ChildProcess | undefined;
+  let reviewerApi: ChildProcess | undefined;
+  let tls: Awaited<ReturnType<typeof productionTlsProxy>> | undefined;
+  let otp: Awaited<ReturnType<typeof otpRelay>> | undefined;
   let passed = false;
   try {
-    const dockerFree =
-      Number(
-        execFileSync(
-          'docker',
-          [
-            'exec',
-            CONTAINER,
-            'df',
-            '-k',
-            '--output=avail',
-            '/var/lib/postgresql/data',
-          ],
-          {
-            encoding: 'utf8',
-          },
-        )
-          .trim()
-          .split('\n')
-          .at(-1),
-      ) * 1024;
+    const dockerFree = ownedDataDirectory
+      ? statfsSync(ownedDataDirectory).bavail *
+        statfsSync(ownedDataDirectory).bsize
+      : Number(
+          execFileSync(
+            'docker',
+            [
+              'exec',
+              exactGrants ? ownedContainer : CONTAINER,
+              'df',
+              '-k',
+              '--output=avail',
+              '/var/lib/postgresql/data',
+            ],
+            {
+              encoding: 'utf8',
+            },
+          )
+            .trim()
+            .split('\n')
+            .at(-1),
+        ) * 1024;
     const hostFree =
       Number(
         execFileSync('df', ['-k', ROOT], { encoding: 'utf8' })
@@ -181,8 +508,15 @@ async function main() {
       )?.Name,
       env.POSTGRES_VOLUME_NAME,
     );
+    const sourceAdmin = exactGrants
+      ? new Pool({
+          connectionString: urlFor(sourceBase, 'postgres'),
+          max: 1,
+          options: '-c default_transaction_read_only=on',
+        })
+      : admin;
     const server = (
-      await admin.query(
+      await sourceAdmin.query(
         'select system_identifier::text from pg_control_system()',
       )
     ).rows[0].system_identifier;
@@ -203,6 +537,7 @@ async function main() {
       ],
       { encoding: 'utf8' },
     ).trim();
+    if (sourceAdmin !== admin) await sourceAdmin.end();
     assert.equal(
       server,
       dockerServer,
@@ -233,7 +568,17 @@ async function main() {
     await db.destroy();
     target = new Pool({ connectionString: urlFor(base, database), max: 4 });
     const versions = [ROUTING_VERSION, SPATIAL_VERSION, RAIL_VERSION];
+    assert.equal(
+      (await source.query('show default_transaction_read_only')).rows[0]
+        .default_transaction_read_only,
+      'on',
+    );
     await source.query('begin transaction read only');
+    assert.equal(
+      (await source.query('show transaction_read_only')).rows[0]
+        .transaction_read_only,
+      'on',
+    );
     try {
       const versionRows = await source.query(
         `select * from meta.dataset_version where id = any($1::uuid[])`,
@@ -279,6 +624,27 @@ async function main() {
       await copyTable(source, target, 'twin.network_snapshot', 'id=$1::uuid', [
         SNAPSHOT,
       ]);
+      // Place search and plan identity resolution read the snapshot's transit
+      // and rail corpora; the isolated runtime needs the same bounded corpus or
+      // suites silently fall back to the shared product surface.
+      for (const table of [
+        'transit.operator',
+        'transit.service_calendar',
+        'transit.transit_shape',
+        'transit.route',
+        'transit.station',
+        'transit.stop',
+        'transit.trip',
+        'transit.stop_time',
+        'spatial.rail_topology_station',
+      ])
+        await copyTable(
+          source,
+          target,
+          table,
+          'dataset_version_id = any($1::uuid[])',
+          [versions],
+        );
       await source.query('commit');
     } catch (error) {
       await source.query('rollback');
@@ -302,16 +668,79 @@ async function main() {
         ).rows[0].count,
       ) > 0,
     );
+    const otpTarget = env.OTP_URL ?? 'http://127.0.0.1:8080/otp/gtfs/v1';
+    otp = await otpRelay(otpTarget);
+    let runtimeUrl = urlFor(base, database);
+    if (exactGrants) {
+      psql(
+        database,
+        `create role ${q(runtimeRole)} login nosuperuser nocreatedb nocreaterole noreplication nobypassrls password '${runtimePassword}';`,
+      );
+      const template = readFileSync(
+        `${ROOT}/database/operations/passenger-runtime-grants.sql`,
+        'utf8',
+      );
+      psql(database, template, [
+        '-v',
+        `runtime_role=${runtimeRole}`,
+        '-v',
+        `database_name=${database}`,
+      ]);
+      const runtimeBase = new URL(base);
+      runtimeBase.username = runtimeRole;
+      runtimeBase.password = runtimePassword;
+      runtimeUrl = urlFor(runtimeBase, database);
+      const runtime = new Pool({ connectionString: runtimeUrl, max: 1 });
+      try {
+        const flags = (
+          await runtime.query(
+            'select rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls from pg_roles where rolname=current_user',
+          )
+        ).rows[0];
+        assert.ok(Object.values(flags).every((value) => value === false));
+        for (const sql of [
+          'insert into transit.station select * from transit.station where false',
+          'update twin.mobility_state set id=id where false',
+          'delete from journey.active_journey where false',
+          'update recovery.recovery_plan set comparison_json=comparison_json where false',
+          'update recovery.recovery_acceptance set acceptance_json=acceptance_json where false',
+          'insert into report.passenger_report_review select * from report.passenger_report_review where false',
+        ])
+          await assert.rejects(
+            runtime.query(sql),
+            (error: unknown) => (error as { code?: string }).code === '42501',
+          );
+        console.log(
+          JSON.stringify({
+            exact_runtime_grants: true,
+            template_sha256: createHash('sha256')
+              .update(template)
+              .digest('hex'),
+            role_flags: flags,
+            denied_ingestion_state_delete: true,
+          }),
+        );
+      } finally {
+        await runtime.end();
+      }
+    }
     const childEnv = {
       ...env,
-      DATABASE_URL: urlFor(base, database),
+      DATABASE_URL: runtimeUrl,
+      CP2_EXPECTED_DB_PORT: base.port,
+      PRODUCT_ACCEPTANCE_EVIDENCE_DIR:
+        env.PRODUCT_ACCEPTANCE_EVIDENCE_DIR ??
+        `${ROOT}/.release-evidence/exact-runtime-${id}`,
+      CONTROLLED_REVIEW_API_URL: exactGrants
+        ? 'http://127.0.0.1:3304/api/v1'
+        : 'http://127.0.0.1:3303/api/v1',
       POSTGRES_DB: database,
       PRODUCT_P1R_ACCEPTANCE: '1',
       PRODUCT_P1R_PORT: '3303',
       API_PORT: '3303',
       PASSENGER_API_BASE_URL: 'http://127.0.0.1:3303/api/v1',
       PASSENGER_SESSION_SECRET: 'test-session-secret-0123456789abcdef',
-      CONTROLLED_REVIEW_ENABLED: 'true',
+      CONTROLLED_REVIEW_ENABLED: exactGrants ? 'false' : 'true',
       CONTROLLED_REVIEW_TOKEN:
         typeof env.CONTROLLED_REVIEW_TOKEN === 'string' &&
         env.CONTROLLED_REVIEW_TOKEN.length >= 32
@@ -321,105 +750,378 @@ async function main() {
       PASSENGER_API_URL: 'http://127.0.0.1:3303/api/v1',
       PASSENGER_NETWORK_SNAPSHOT_ID: SNAPSHOT,
       PASSENGER_WEB_URL: 'http://127.0.0.1:3302',
+      M5_API_URL: 'http://127.0.0.1:3303/api/v1',
+      M5_WEB_URL: 'http://127.0.0.1:3302',
+      M6_API_URL: 'http://127.0.0.1:3303/api/v1',
+      M6_WEB_URL: 'http://127.0.0.1:3302',
       M7_API_URL: 'http://127.0.0.1:3303/api/v1',
       M7_WEB_URL: 'http://127.0.0.1:3302',
       NEXT_PUBLIC_API_BASE_URL: 'http://127.0.0.1:3303/api/v1',
       WEB_PORT: '3302',
-      PRODUCT_ACCEPTANCE_DIST_DIR: '.next-cp2-acceptance-dev',
+      OTP_URL: otp.endpoint,
+      OTP_RELAY_CONTROL: `http://127.0.0.1:${new URL(otp.endpoint).port}${otp.controlPath}`,
+      PRODUCT_ACCEPTANCE_DIST_DIR: productionWeb
+        ? '.next-cp2-stage-g-production'
+        : '.next-cp2-acceptance-dev',
       CP2_EXPECTED_INVOCATION: id,
       CP2_EXPECTED_DB: database,
       CP2_EXPECTED_MARKER: marker,
       CP2_EXPECTED_OID: String(scratch.oid),
       CP2_EXPECTED_OWNER: scratch.owner,
     };
-    api = spawn(
-      process.execPath,
-      ['--import', 'tsx', 'src/journey/product-p1r-browser.cli.ts'],
-      {
-        cwd: `${ROOT}/apps/api`,
-        env: childEnv,
-        detached: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      },
-    );
-    const ownedApi = api;
-    const readyLine = await new Promise<string>((resolve, reject) => {
-      const chunks: Array<string> = [];
-      const timeout = setTimeout(
-        () =>
+    const startApi = async () => {
+      api = spawn(
+        process.execPath,
+        ['--import', 'tsx', 'src/journey/product-p1r-browser.cli.ts'],
+        {
+          cwd: `${ROOT}/apps/api`,
+          env: childEnv,
+          detached: true,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        },
+      );
+      const ownedApi = api;
+      const readyLine = await new Promise<string>((resolve, reject) => {
+        const chunks: Array<string> = [];
+        const timeout = setTimeout(
+          () =>
+            reject(
+              new Error(
+                'Owned API identity timeout; child output withheld (may contain sensitive data)',
+              ),
+            ),
+          60000,
+        );
+        ownedApi.stdout!.setEncoding('utf8');
+        ownedApi.stdout!.on('data', (chunk: string) => {
+          chunks.push(chunk);
+          const line = chunks
+            .join('')
+            .split('\n')
+            .find((candidate) => candidate.includes('P1R_ACCEPTANCE_READY'));
+          if (line) {
+            clearTimeout(timeout);
+            resolve(line);
+          }
+        });
+        ownedApi.stderr!.setEncoding('utf8');
+        ownedApi.stderr!.on('data', (chunk: string) => chunks.push(chunk));
+        ownedApi.once('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+        ownedApi.once('exit', (code) => {
+          clearTimeout(timeout);
+          const diagnostic = chunks.join('');
+          const safeCode =
+            diagnostic
+              .split('\n')
+              .filter((line) =>
+                /(?:Error:|error:|EADDRINUSE|EACCES|MODULE_NOT_FOUND|ERR_MODULE_NOT_FOUND|permission denied for [a-z_ ]+|DATABASE_[A-Z_]+)/i.test(
+                  line,
+                ),
+              )
+              .slice(-8)
+              .map((line) =>
+                line
+                  .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, '[DATABASE_URL]')
+                  .replace(/(authorization: ?bearer\s+)\S+/gi, '$1[REDACTED]')
+                  .slice(0, 400),
+              )
+              .join('\n') || 'details withheld';
           reject(
             new Error(
-              `Owned API identity timeout: ${chunks.join('').slice(-200)}`,
+              `Owned API exited before readiness: ${code}; ${safeCode}`,
             ),
-          ),
-        60000,
+          );
+        });
+      });
+      console.log(redact(readyLine.trim()));
+      await wait('http://127.0.0.1:3303/health/ready', api);
+      if (exactGrants) {
+        const sessions = (
+          await target!.query(
+            `select usename, count(*)::int connections from pg_stat_activity where datname=$1 and usename=$2 group by usename`,
+            [database, runtimeRole],
+          )
+        ).rows;
+        assert.ok(
+          sessions.length === 1 && sessions[0].connections > 0,
+          'Passenger API runtime-role database session missing',
+        );
+        console.log(
+          JSON.stringify({
+            passenger_api_sessions: sessions,
+            controlled_review_enabled: false,
+            api_host: 'acceptance-configured Nest AppModule; no role switching',
+            reviewer_port: 3304,
+          }),
+        );
+      }
+    };
+    await startApi();
+    if (exactGrants) {
+      reviewerApi = spawn(
+        process.execPath,
+        ['--import', 'tsx', 'src/journey/product-p1r-browser.cli.ts'],
+        {
+          cwd: `${ROOT}/apps/api`,
+          detached: true,
+          stdio: ['pipe', 'ignore', 'ignore'],
+          env: {
+            ...childEnv,
+            DATABASE_URL: urlFor(base, database),
+            PRODUCT_P1R_PORT: '3304',
+            API_PORT: '3304',
+            CONTROLLED_REVIEW_ENABLED: 'true',
+          },
+        },
       );
-      ownedApi.stdout!.setEncoding('utf8');
-      ownedApi.stdout!.on('data', (chunk: string) => {
-        chunks.push(chunk);
-        const line = chunks
-          .join('')
-          .split('\n')
-          .find((candidate) => candidate.includes('P1R_ACCEPTANCE_READY'));
-        if (line) {
-          clearTimeout(timeout);
-          resolve(line);
-        }
+      await wait('http://127.0.0.1:3304/health/ready', reviewerApi);
+    }
+    if (productionWeb && !productionRestart) {
+      for (const key of [
+        'PASSENGER_WEB_URL',
+        'M5_WEB_URL',
+        'M6_WEB_URL',
+        'M7_WEB_URL',
+      ] as const)
+        childEnv[key] = 'https://127.0.0.1:3302';
+      tls = await productionTlsProxy(3302, 3307);
+    }
+    const webEnv = {
+      ...childEnv,
+      NODE_ENV: productionWeb ? 'production' : 'development',
+    };
+    const startWeb = async () => {
+      web = spawn(
+        'pnpm',
+        [
+          '--filter',
+          '@transum-in/web',
+          'exec',
+          'next',
+          productionWeb ? 'start' : 'dev',
+          '--hostname',
+          '127.0.0.1',
+          '--port',
+          productionWeb && !productionRestart ? '3307' : '3302',
+        ],
+        { cwd: ROOT, env: webEnv, detached: true, stdio: 'ignore' },
+      );
+      await wait(
+        productionWeb && !productionRestart
+          ? 'http://127.0.0.1:3307'
+          : 'http://127.0.0.1:3302',
+        web,
+      );
+    };
+    if (productionWeb) {
+      if (productionRestart)
+        assert.equal(
+          suiteFlags.length,
+          0,
+          'Restart proof runs alone; omit --suite',
+        );
+      await new Promise<void>((resolve, reject) => {
+        const build = spawn(
+          'pnpm',
+          ['--filter', '@transum-in/web', 'exec', 'next', 'build'],
+          {
+            cwd: ROOT,
+            env: webEnv,
+            stdio: 'ignore',
+          },
+        );
+        build.once('error', reject);
+        build.once('close', (code) =>
+          code === 0
+            ? resolve()
+            : reject(
+                new Error(
+                  'Owned production Next build failed; output withheld',
+                ),
+              ),
+        );
       });
-      ownedApi.stderr!.setEncoding('utf8');
-      ownedApi.stderr!.on('data', (chunk: string) => chunks.push(chunk));
-      ownedApi.once('error', (error) => {
-        clearTimeout(timeout);
-        reject(error);
+      if (productionRestart)
+        tls = await productionTlsProxy(Number(RESTART_TLS_PORT), 3302);
+    }
+    await startWeb();
+    const browserEnv = {
+      ...childEnv,
+      ...(productionWeb && !productionRestart
+        ? { NODE_TLS_REJECT_UNAUTHORIZED: '0' }
+        : {}),
+      CONTROLLED_REVIEW_ENABLED: 'true',
+      CP2_API_PID: String(api!.pid),
+    };
+    if (productionRestart) {
+      const suite = spawn(
+        process.execPath,
+        ['apps/web/scripts/passenger-production-restart-acceptance.mjs'],
+        {
+          cwd: ROOT,
+          env: {
+            ...browserEnv,
+            STAGE_G_WEB_URL: `https://127.0.0.1:${RESTART_TLS_PORT}`,
+            NODE_ENV: 'production',
+          },
+          stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        },
+      );
+      let restarted = false;
+      let restartError: unknown;
+      let restartTask: Promise<void> = Promise.resolve();
+      let apiStopped = false;
+      const ownedRestartGuard = async (action: () => Promise<void>) => {
+        await restartTask;
+        restartTask = action().catch((error) => {
+          restartError = error;
+          suite.kill('SIGTERM');
+          throw error;
+        });
+        await restartTask;
+      };
+      suite.on('message', (message) => {
+        const type = (message as { type?: string }).type;
+        if (!type) return;
+        void (async () => {
+          if (type === 'RESTART_WEB') {
+            await ownedRestartGuard(async () => {
+              assert.deepEqual(
+                await identity(admin),
+                scratch,
+                'Scratch identity changed before web restart',
+              );
+              await stop(web);
+              assert.ok(
+                web!.exitCode !== null || web!.signalCode !== null,
+                'Owned web did not stop',
+              );
+              await startWeb();
+              suite.send({ type: 'WEB_RESTARTED' });
+            });
+          } else if (type === 'STOP_API') {
+            await ownedRestartGuard(async () => {
+              assert.deepEqual(
+                await identity(admin),
+                scratch,
+                'Scratch identity changed before API stop',
+              );
+              await stop(api);
+              assert.ok(
+                api!.exitCode !== null || api!.signalCode !== null,
+                'Owned API did not stop',
+              );
+              apiStopped = true;
+              suite.send({ type: 'API_STOPPED' });
+            });
+          } else if (type === 'START_API') {
+            await ownedRestartGuard(async () => {
+              assert.ok(
+                apiStopped,
+                'API start requested without owned API stop',
+              );
+              const oldPid = api!.pid;
+              await startApi();
+              assert.notEqual(api!.pid, oldPid, 'API PID did not change');
+              assert.deepEqual(
+                await identity(admin),
+                scratch,
+                'Scratch identity changed after API restart',
+              );
+              apiStopped = false;
+              restarted = true;
+              suite.send({ type: 'API_RESTARTED', apiPid: String(api!.pid) });
+            });
+          } else if (type === 'RESTART') {
+            await ownedRestartGuard(async () => {
+              assert.deepEqual(
+                await identity(admin),
+                scratch,
+                'Scratch identity changed before restart',
+              );
+              const oldPid = api!.pid;
+              await stop(web);
+              await stop(api);
+              assert.ok(
+                api!.exitCode !== null || api!.signalCode !== null,
+                'Owned API did not stop',
+              );
+              assert.ok(
+                web!.exitCode !== null || web!.signalCode !== null,
+                'Owned web did not stop',
+              );
+              await startApi();
+              await startWeb();
+              assert.notEqual(api!.pid, oldPid, 'API PID did not change');
+              assert.deepEqual(
+                await identity(admin),
+                scratch,
+                'Scratch identity changed after restart',
+              );
+              restarted = true;
+              suite.send({ type: 'RESTARTED', apiPid: String(api!.pid) });
+            });
+          }
+        })().catch(() => undefined);
       });
-      ownedApi.once('exit', (code) => {
-        clearTimeout(timeout);
-        reject(new Error(`Owned API exited before readiness: ${code}`));
+      const code = await new Promise<number | null>((resolve, reject) => {
+        suite.once('error', reject);
+        suite.once('close', resolve);
       });
-    });
-    console.log(redact(readyLine.trim()));
-    await wait('http://127.0.0.1:3303/health/ready', api);
-    // Local HTTP isolated runtime: next dev binds plain HTTP so the proxy's
-    // production-mode Secure cookie/https origin guard does not two-face an
-    // http web port. Guard severity is unchanged elsewhere.
-    web = spawn(
-      'pnpm',
-      [
-        '--filter',
-        '@transum-in/web',
-        'exec',
-        'next',
-        'dev',
-        '--webpack',
-        '--port',
-        '3302',
-      ],
-      {
+      await restartTask;
+      if (restartError) throw restartError;
+      assert.ok(restarted, 'Browser did not request restart');
+      assert.equal(code, 0, 'Stage G browser proof failed');
+    }
+    const hasCp2 = !productionRestart && selectedSuites.includes('CP2');
+    const hasCp3 = !productionRestart && selectedSuites.includes('CP3');
+    for (const key of productionRestart ? [] : selectedSuites) {
+      const script = SUITE_SCRIPTS[key];
+      console.log(JSON.stringify({ suite: key, script }));
+      const suite = spawn(process.execPath, [script], {
         cwd: ROOT,
-        env: { ...childEnv, NODE_ENV: 'development' },
-        detached: true,
-        stdio: 'ignore',
-      },
-    );
-    await wait('http://127.0.0.1:3302', web);
-    const browserEnv = { ...childEnv, CP2_API_PID: String(api.pid) };
-    const cp2 = spawn(process.execPath, [browserScript], {
-      cwd: ROOT,
-      env: browserEnv,
-      stdio: 'inherit',
-    });
-    cp2.stdout?.pipe(process.stdout);
-    cp2.stderr?.pipe(process.stderr);
-    const cp2Code = await new Promise<number | null>((resolve, reject) => {
-      cp2.once('error', reject);
-      cp2.once('close', resolve);
-    });
-    assert.equal(
-      cp2Code,
-      0,
-      recoverySuite ? 'CP3 browser proof failed' : 'CP2 browser proof failed',
-    );
-    if (!recoverySuite) {
+        env: browserEnv,
+        stdio: 'inherit',
+      });
+      const suiteCode = await new Promise<number | null>((resolve, reject) => {
+        suite.once('error', reject);
+        suite.once('close', resolve);
+      });
+      assert.equal(suiteCode, 0, `${key} browser proof failed`);
+    }
+    if (hasCp3 && process.env.R7_SEQUENTIAL_RECOVERY === '1') {
+      const lineage = await target.query<{
+        proposal_base_matches: boolean;
+        predecessor_exists: boolean;
+        pointer_matches: boolean;
+      }>(`
+        select
+          p.comparison_json->>'baseRecoveryId' =
+            a.acceptance_json->>'predecessorRecoveryId' as proposal_base_matches,
+          exists(select 1 from recovery.recovery_acceptance predecessor
+            where predecessor.recovery_id =
+              (a.acceptance_json->>'predecessorRecoveryId')::uuid
+              and predecessor.active_journey_id=a.active_journey_id) as predecessor_exists,
+          j.accepted_recovery_id=a.recovery_id as pointer_matches
+        from recovery.recovery_acceptance a
+        join recovery.recovery_plan p on p.id=a.recovery_id
+        join journey.active_journey j on j.journey_id=a.active_journey_id
+        where a.acceptance_json->>'predecessorRecoveryId' is not null
+      `);
+      assert.equal(lineage.rows.length, 1, 'R2 durable acceptance required');
+      assert.deepEqual(lineage.rows[0], {
+        proposal_base_matches: true,
+        predecessor_exists: true,
+        pointer_matches: true,
+      });
+      console.log(
+        'ASSERT sequential.durable_lineage base=R1 predecessor=R1 pointer=R2 exact=true',
+      );
+    }
+    if (hasCp2) {
       const r4 = spawn(
         process.execPath,
         ['apps/web/scripts/passenger-r4-f04-acceptance.mjs'],
@@ -435,16 +1137,279 @@ async function main() {
       });
       assert.equal(r4Code, 0, 'R4 browser proof failed');
     }
+    if (exactGrants) {
+      await stop(web);
+      await stop(api);
+      await stop(reviewerApi);
+      const restoredName = `${database}_restore`;
+      assert.deepEqual(
+        await identity(admin),
+        scratch,
+        'Scratch changed before backup',
+      );
+      const dump = docker([
+        'exec',
+        '-e',
+        'PGPASSWORD',
+        ownedContainer,
+        'pg_dump',
+        '-U',
+        'postgres',
+        '-d',
+        database,
+        '-Fc',
+      ]);
+      await admin.query(`create database ${q(restoredName)}`);
+      await admin.query(
+        `comment on database ${q(restoredName)} is '${marker}:restore'`,
+      );
+      const restoreIdentity = (
+        await admin.query(
+          `select oid::int, pg_get_userbyid(datdba) owner, shobj_description(oid,'pg_database') marker from pg_database where datname=$1`,
+          [restoredName],
+        )
+      ).rows[0];
+      docker(
+        [
+          'exec',
+          '-i',
+          '-e',
+          'PGPASSWORD',
+          ownedContainer,
+          'pg_restore',
+          '-U',
+          'postgres',
+          '--exit-on-error',
+          '-d',
+          restoredName,
+        ],
+        dump,
+      );
+      const restored = new Pool({
+        connectionString: urlFor(base, restoredName),
+        max: 1,
+      });
+      const hashes = async (pool: Pool) => {
+        const tables = (
+          await pool.query(
+            `select schemaname, tablename from pg_tables where schemaname not in ('pg_catalog','information_schema','public') order by 1,2`,
+          )
+        ).rows;
+        const results = [];
+        for (const { schemaname, tablename } of tables) {
+          const table = `${q(schemaname)}.${q(tablename)}`;
+          results.push({
+            table,
+            ...(
+              await pool.query(
+                `select count(*)::int rows, md5(coalesce(string_agg(row_hash,'' order by row_hash),'')) hash from (select md5(to_jsonb(t)::text) row_hash from ${table} t) hashed`,
+              )
+            ).rows[0],
+          });
+        }
+        return results;
+      };
+      try {
+        const originalHashes = await hashes(target);
+        assert.deepEqual(await hashes(restored), originalHashes);
+        const requiresRecoveryAcceptance = selectedSuites.some((suite) =>
+          ['COMBINED', 'V20', 'CP3', 'M6', 'M7'].includes(suite),
+        );
+        const requiresPassengerReport = selectedSuites.some((suite) =>
+          ['COMBINED', 'V20', 'CP3', 'M5', 'M6', 'M7', 'S09'].includes(suite),
+        );
+        const requiresCopilotRead = selectedSuites.some((suite) =>
+          ['COMBINED', 'COPILOT'].includes(suite),
+        );
+        const copilotTables = [
+          'copilot.session',
+          'copilot.message',
+          'copilot.tool_audit',
+        ];
+        const populatedTables = [
+          '"journey"."active_journey"',
+          ...(requiresRecoveryAcceptance
+            ? ['"recovery"."recovery_acceptance"']
+            : []),
+          ...(requiresPassengerReport ? ['"report"."passenger_report"'] : []),
+          ...(requiresCopilotRead
+            ? copilotTables.map((table) => `"${table.replace('.', '"."')}"`)
+            : []),
+        ];
+        for (const table of populatedTables)
+          assert.ok(
+            originalHashes.some((row) => row.table === table && row.rows > 0),
+            `Populated backup required: ${table}`,
+          );
+        const catalog = async (pool: Pool) =>
+          (
+            await pool.query(
+              `select 'constraint' kind,n.nspname schema,c.relname name,con.conname item,pg_get_constraintdef(con.oid) definition,con.convalidated valid from pg_constraint con join pg_class c on c.oid=con.conrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname not like 'pg_%' and n.nspname <> 'information_schema' union all select 'index',n.nspname,c.relname,ic.relname,pg_get_indexdef(i.indexrelid),i.indisvalid from pg_index i join pg_class c on c.oid=i.indrelid join pg_class ic on ic.oid=i.indexrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname not like 'pg_%' and n.nspname <> 'information_schema' order by 1,2,3,4`,
+            )
+          ).rows;
+        const originalCatalog = await catalog(target);
+        const restoredCatalog = await catalog(restored);
+        const invalidCatalog = (rows: typeof originalCatalog) =>
+          rows.filter((row) => row.valid === false);
+        // Migration 202610080001 deliberately leaves legacy hazard evidence NOT VALID.
+        for (const [scope, rows] of [
+          ['original', originalCatalog],
+          ['restored', restoredCatalog],
+        ] as const)
+          assert.deepEqual(
+            invalidCatalog(rows).map(({ kind, schema, name, item }) => ({
+              kind,
+              schema,
+              name,
+              item,
+            })),
+            [
+              {
+                kind: 'constraint',
+                schema: 'disruption',
+                name: 'event',
+                item: 'disruption_event_hazard_evidence_check',
+              },
+            ],
+            `Unexpected invalid constraint/index in ${scope} catalog`,
+          );
+        const definitionDifferences = originalCatalog.flatMap((row, index) =>
+          row.definition === restoredCatalog[index]?.definition
+            ? []
+            : [{ original: row, restored: restoredCatalog[index] }],
+        );
+        const constraintStructure = async (pool: Pool) =>
+          (
+            await pool.query(
+              `select n.nspname schema,c.relname table_name,con.conname,con.contype,array(select a.attname from unnest(con.conkey) with ordinality k(num,ord) join pg_attribute a on a.attrelid=con.conrelid and a.attnum=k.num order by k.ord) conkey,array(select a.attname from unnest(con.confkey) with ordinality k(num,ord) join pg_attribute a on a.attrelid=con.confrelid and a.attnum=k.num order by k.ord) confkey,con.confupdtype,con.confdeltype,con.confmatchtype,con.condeferrable,con.condeferred,con.convalidated,rn.nspname referenced_schema,rc.relname referenced_table from pg_constraint con join pg_class c on c.oid=con.conrelid join pg_namespace n on n.oid=c.relnamespace left join pg_class rc on rc.oid=con.confrelid left join pg_namespace rn on rn.oid=rc.relnamespace where n.nspname not like 'pg_%' and n.nspname <> 'information_schema' order by 1,2,3`,
+            )
+          ).rows;
+        assert.deepEqual(
+          await constraintStructure(restored),
+          await constraintStructure(target),
+        );
+        assert.deepEqual(
+          restoredCatalog.filter((row) => row.kind === 'index'),
+          originalCatalog.filter((row) => row.kind === 'index'),
+        );
+        assert.deepEqual(
+          restoredCatalog.map(({ kind, schema, name, item, valid }) => ({
+            kind,
+            schema,
+            name,
+            item,
+            valid,
+          })),
+          originalCatalog.map(({ kind, schema, name, item, valid }) => ({
+            kind,
+            schema,
+            name,
+            item,
+            valid,
+          })),
+          'Restored constraint/index validation state differs',
+        );
+        if (definitionDifferences.length)
+          console.log(
+            JSON.stringify({
+              constraint_definition_comparison: 'NOT_IDENTICAL',
+              differences: definitionDifferences,
+              scope:
+                'Definitions retained verbatim; no equivalence claim for changed expressions. Constraint structure and index definitions compared separately.',
+            }),
+          );
+        const readUrl = new URL(runtimeUrl);
+        readUrl.pathname = `/${restoredName}`;
+        const runtimeRead = new Pool({
+          connectionString: readUrl.toString(),
+          max: 1,
+        });
+        try {
+          const requiresRecoveryRead = selectedSuites.some((suite) =>
+            ['COMBINED', 'V20', 'CP3', 'M6', 'M7'].includes(suite),
+          );
+          const requiresReportRead = selectedSuites.some((suite) =>
+            ['COMBINED', 'V20', 'CP3', 'M5', 'M6', 'M7', 'S09'].includes(suite),
+          );
+          const readableTables = [
+            'journey.active_journey',
+            ...(requiresRecoveryRead ? ['recovery.recovery_acceptance'] : []),
+            ...(requiresReportRead ? ['report.passenger_report'] : []),
+            ...(requiresCopilotRead ? copilotTables : []),
+            'transit.route',
+          ];
+          for (const table of readableTables)
+            assert.ok(
+              Number(
+                (await runtimeRead.query(`select count(*) from ${table}`))
+                  .rows[0].count,
+              ) > 0,
+            );
+        } finally {
+          await runtimeRead.end();
+        }
+        console.log(
+          JSON.stringify({
+            backup_restore: 'PASS',
+            scope: 'populated owned scratch only; no product dump',
+            dump_sha256: createHash('sha256').update(dump).digest('hex'),
+            rows: originalHashes,
+            constraint_structure_equal: true,
+            constraint_definitions_identical:
+              definitionDifferences.length === 0,
+            constraint_definition_difference_count:
+              definitionDifferences.length,
+            index_definitions_equal: true,
+            restored_validation_matches_original: true,
+            original_invalid_constraints_indexes:
+              invalidCatalog(originalCatalog),
+            restored_invalid_constraints_indexes:
+              invalidCatalog(restoredCatalog),
+            restored_constraints_indexes_valid: restoredCatalog.every(
+              (row) => row.valid === true,
+            ),
+            restored_runtime_reads: true,
+          }),
+        );
+      } finally {
+        await restored.end();
+      }
+      assert.deepEqual(
+        (
+          await admin.query(
+            `select oid::int, pg_get_userbyid(datdba) owner, shobj_description(oid,'pg_database') marker from pg_database where datname=$1`,
+            [restoredName],
+          )
+        ).rows[0],
+        restoreIdentity,
+      );
+      assert.equal(restoreIdentity.marker, `${marker}:restore`);
+      assert.equal(
+        Number(
+          (
+            await admin.query(
+              'select count(*) from pg_stat_activity where datname=$1',
+              [restoredName],
+            )
+          ).rows[0].count,
+        ),
+        0,
+      );
+      await admin.query(`drop database ${q(restoredName)}`);
+    }
     passed = true;
     console.log(
       JSON.stringify({
         status: 'PASS',
-        tier: recoverySuite ? 'CP3_RECOVERY_NAVIGATION' : 'CP2_ISOLATED_SUBSET',
+        tier: `ISOLATED_SCRATCH_${selectedSuites.join('_')}`,
+        suites: selectedSuites,
         database,
         marker,
         oid: scratch.oid,
         owner: scratch.owner,
         source_read_only: true,
+        exact_runtime_grants: exactGrants,
+        web_mode: productionWeb ? 'production' : 'development',
         api_port: 3303,
         web_port: 3302,
       }),
@@ -457,8 +1422,11 @@ async function main() {
     );
     process.exitCode = 1;
   } finally {
+    await otp?.cleanup().catch(() => {});
+    tls?.cleanup();
     await stop(web);
     await stop(api);
+    await stop(reviewerApi);
     await target?.end().catch(() => undefined);
     await source.end();
     const cleanup = new Pool({
@@ -514,6 +1482,22 @@ async function main() {
     }
     await cleanup.end();
     await admin.end();
+    if (exactGrants && passed && dropReported && ownedContainerId) {
+      const actual = JSON.parse(
+        docker(['inspect', ownedContainer]).toString(),
+      )[0];
+      assert.equal(actual.Id, ownedContainerId);
+      assert.equal(actual.Config.Labels['tnx.passenger'], id);
+      docker(['rm', '-v', '-f', ownedContainer]);
+      if (ownedDataDirectory) rmSync(ownedDataDirectory, { recursive: true });
+      console.log(
+        JSON.stringify({
+          cleanup: 'OWNED_CONTAINER_REMOVED',
+          container: ownedContainer,
+          id: ownedContainerId,
+        }),
+      );
+    }
     assert.ok(
       passed ? dropReported : true,
       'Successful run kept no scratch drop evidence',

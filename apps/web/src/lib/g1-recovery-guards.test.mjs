@@ -6,6 +6,7 @@ import {
   recoveryProposalKey,
   recoverySource,
   sameRecoverySource,
+  nextRecoveryAttempt,
 } from './passenger-api.ts';
 
 const journey = (id, revision, accepted_recovery_id = null) => ({
@@ -99,4 +100,20 @@ test('R6-C stale responses must not overwrite a generation-changing recovery', (
     }),
     false,
   );
+});
+
+test('Recovery key stable for uncertain retry; fresh allowed only after known outcome', () => {
+  assert.throws(() => nextRecoveryAttempt(null, true));
+  assert.throws(() => nextRecoveryAttempt({ nonce: 0, known: false }, true));
+  const after = nextRecoveryAttempt({ nonce: 0, known: true }, true);
+  assert.equal(after.nonce, 1);
+  assert.equal(after.known, false);
+  // unknown outcome → same idempotencyKey on retry
+  const stable = recoveryProposalKey({ journeyId: 'j1', impactId: 'i1', revision: 4, acceptedRecoveryId: null });
+  const stable2 = recoveryProposalKey({ journeyId: 'j1', impactId: 'i1', revision: 4, acceptedRecoveryId: null, attemptNonce: 0 });
+  assert.equal(stable, stable2);
+  const fresh = recoveryProposalKey({ journeyId: 'j1', impactId: 'i1', revision: 4, acceptedRecoveryId: null, attemptNonce: 1 });
+  assert.notEqual(stable, fresh);
+  const transient = nextRecoveryAttempt({ nonce: 0, known: true }, false);
+  assert.equal(transient.nonce, 0);
 });

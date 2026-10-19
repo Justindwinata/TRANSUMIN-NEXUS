@@ -189,6 +189,36 @@ export class OtpJourneyRoutingAdapter implements JourneyRoutingPort {
       ),
     ];
     const transitEnabled = otpTransitModes.length > 0;
+    // Mixed research feeds only evidence their manifested common service dates.
+    // OTP may return walking-only edges instead of OUTSIDE_SERVICE_PERIOD.
+    const departure = new Date(request.departureAt);
+    const serviceDate = Number.isFinite(departure.getTime())
+      ? new Intl.DateTimeFormat('en-CA', {
+          timeZone: this.routerManifest.timezone,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }).format(departure)
+      : '';
+    if (
+      transitEnabled &&
+      !this.routerManifest.serviceDates.some(
+        (entry) => entry.representativeDate === serviceDate,
+      )
+    )
+      throw new JourneyRoutingError(
+        'INVALID_TIME',
+        'Requested time is outside the manifested service dates. Choose a supported historical service date.',
+        {
+          supportedServiceDates: [
+            ...new Set(
+              this.routerManifest.serviceDates.map(
+                (entry) => entry.representativeDate,
+              ),
+            ),
+          ],
+        },
+      );
     const variables = {
       origin: {
         label: 'Origin',

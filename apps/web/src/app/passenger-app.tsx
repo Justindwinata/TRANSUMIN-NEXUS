@@ -9,10 +9,12 @@ import {
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   PassengerApiError,
+  reportAttemptHash,
   acceptanceReconcileOutcome,
   canCommitRecovery,
   passengerApi,
   recoveryProposalKey,
+  nextRecoveryAttempt,
   recoverySource,
   type RecoverySource,
 } from '../lib/passenger-api';
@@ -39,7 +41,10 @@ import {
 import type { JourneyMapPoint } from './journey-map';
 import { PlaceSearch } from './place-search';
 import { JourneyMap } from './journey-map';
+import { CopilotDrawer } from '../components/copilot-drawer';
 import {
+  recoveryComparisonSource,
+  canReplayPendingReport,
   distinctModes,
   easiestAmongShown,
   alertIsCurrent,
@@ -77,6 +82,8 @@ import {
 const journeyKey = 'transumin.passenger.journey';
 const recoveryKey = 'transumin.passenger.recovery';
 const activationKey = 'transumin.passenger.activation';
+const reportPendingKey = 'transumin.passenger.report-pending';
+const REPORT_PENDING_TTL_MS = 12 * 60 * 60 * 1000;
 
 function ModeIcon({ mode }: { mode: Journey['segments'][number]['mode'] }) {
   const Icon =
@@ -112,6 +119,10 @@ export function PassengerApp() {
   const [alerts, setAlerts] = useState<JourneyAlert[]>([]);
   const [recovery, setRecovery] = useState<Recovery | null>(null);
   const [acceptance, setAcceptance] = useState<RecoveryAcceptance | null>(null);
+  const comparisonSource = useRef<{
+    recoveryId: string;
+    journey: Journey;
+  } | null>(null);
   const acceptKey = useRef<string | null>(null);
   // G1-A: recoveries and acceptance follow later-over-wins request identity;
   // only the newest in-flight proposal/acceptance may commit frontend state.
@@ -125,6 +136,11 @@ export function PassengerApp() {
   // progress) supersedes it. `recoverySource` is the latest live journey;
   // `activeGeneration` never moves backwards within one mount.
   const recoveryJourney = useRef<RecoverySource | null>(null);
+  const recoveryAttempt = useRef<{
+    scope: string;
+    nonce: number;
+    known: boolean;
+  } | null>(null);
   const activeGeneration = useRef(0);
   const [recoveryStatus, setRecoveryStatus] = useState<
     'NEEDS_RECONCILE' | 'RECONCILING' | null
@@ -186,11 +202,19 @@ export function PassengerApp() {
   const [reports, setReports] = useState<PassengerReport[]>([]);
   const [reportsLoading, setReportsLoading] = useState(false);
   const [reportsError, setReportsError] = useState('');
+  const [reportNeedsReconcile, setReportNeedsReconcile] = useState(false);
   const reportKey = useRef<{ fingerprint: string; key: string } | null>(null);
+  // Identity only; never persist report contents or device coordinates.
+  const localReportAttemptKey = useRef<string | null>(null);
   const planRequest = useRef<{
     id: number;
     controller: AbortController;
   } | null>(null);
+  const [planningHealth, setPlanningHealth] = useState<{
+    status: 'AVAILABLE' | 'UNAVAILABLE';
+    checkedAt: string;
+  } | null>(null);
+  const [planningHealthBusy, setPlanningHealthBusy] = useState(false);
   const planRequestId = useRef(0);
   const lastPlan = useRef<{
     origin: { latitude: number; longitude: number };
@@ -225,11 +249,18 @@ export function PassengerApp() {
     setDeparture(initialJakartaDateTime());
     setProgressAt(initialJakartaDateTime());
     setReportObservedAt(initialJakartaDateTime());
-    const storedJourney = localStorage.getItem(journeyKey);
+    let storedJourney: string | null = null;
+    try {
+      storedJourney = localStorage.getItem(journeyKey);
+    } catch {
+      setError(
+        'Penyimpanan browser tidak tersedia. Pemulihan perjalanan dan pengiriman laporan memerlukan penyimpanan yang tersedia.',
+      );
+    }
     if (storedJourney) {
       void passengerApi
         .getJourney(storedJourney)
-        .then((journey) => {
+        .then(async (journey) => {
           // Never let a slow startup read overwrite a newer generation:
           // a future remount or a switched current journey makes this older
           // mount stale even if it resolves last.
@@ -239,6 +270,55 @@ export function PassengerApp() {
           const generation = activeGeneration.current;
           const source = recoverySource(journey);
           void loadPersistedReports(journey.journey_id);
+          const pendingReport = localStorage.getItem(
+            `${reportPendingKey}.${journey.journey_id}`,
+          );
+          if (pendingReport) {
+            try {
+              const parsed = JSON.parse(pendingReport) as {
+                fingerprint?: unknown;
+                key?: unknown;
+                createdAt?: unknown;
+              };
+              const createdAt =
+                typeof parsed.createdAt === 'number'
+                  ? parsed.createdAt
+                  : Date.now();
+              const stale = Date.now() - createdAt > REPORT_PENDING_TTL_MS;
+              const validKey =
+                typeof parsed.key === 'string' &&
+                /^[A-Za-z0-9._:-]{8,128}$/.test(parsed.key);
+              if (stale || !validKey) {
+                localStorage.removeItem(
+                  `${reportPendingKey}.${journey.journey_id}`,
+                );
+              } else if (
+                typeof parsed.fingerprint === 'string' &&
+                typeof parsed.key === 'string'
+              ) {
+                // Old pending records stored raw JSON; retain them once by
+                // re-hashing so unresolved identity is not silently lost.
+                const digest = /^sha256:[0-9a-f]{64}$/.test(parsed.fingerprint)
+                  ? parsed.fingerprint
+                  : `sha256:${await reportAttemptHash(JSON.parse(parsed.fingerprint))}`;
+                const pendingKey = parsed.key;
+                reportKey.current = { fingerprint: digest, key: pendingKey };
+                localStorage.setItem(
+                  `${reportPendingKey}.${journey.journey_id}`,
+                  JSON.stringify({
+                    fingerprint: digest,
+                    key: pendingKey,
+                    createdAt,
+                  }),
+                );
+                setReportNeedsReconcile(true);
+              }
+            } catch {
+              localStorage.removeItem(
+                `${reportPendingKey}.${journey.journey_id}`,
+              );
+            }
+          }
           const storedRecovery = localStorage.getItem(
             `${recoveryKey}.${journey.journey_id}`,
           );
@@ -301,6 +381,7 @@ export function PassengerApp() {
           }
         });
     }
+    void refreshPlanningHealth();
     void passengerApi
       .config()
       .then((config) => {
@@ -486,6 +567,25 @@ export function PassengerApp() {
     device.state,
     navigationPaused,
   ]);
+
+  async function refreshPlanningHealth() {
+    if (planningHealthBusy) return;
+    setPlanningHealthBusy(true);
+    try {
+      const health = await passengerApi.planningHealth();
+      setPlanningHealth({
+        status: health.status,
+        checkedAt: health.checked_at,
+      });
+    } catch {
+      setPlanningHealth({
+        status: 'UNAVAILABLE',
+        checkedAt: new Date().toISOString(),
+      });
+    } finally {
+      setPlanningHealthBusy(false);
+    }
+  }
 
   async function planJourney(
     origin: {
@@ -805,9 +905,137 @@ export function PassengerApp() {
     }
   }
 
+  function resetReportAttempt() {
+    if (reportNeedsReconcile) return;
+    reportKey.current = null;
+  }
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      const journeyId = activeRef.current?.journey_id;
+      if (!journeyId || event.key !== `${reportPendingKey}.${journeyId}`)
+        return;
+      if (event.newValue) {
+        try {
+          const pending = JSON.parse(event.newValue) as {
+            fingerprint?: unknown;
+            key?: unknown;
+          };
+          if (
+            typeof pending.fingerprint === 'string' &&
+            /^sha256:[0-9a-f]{64}$/.test(pending.fingerprint) &&
+            typeof pending.key === 'string' &&
+            /^[A-Za-z0-9._:-]{8,128}$/.test(pending.key)
+          )
+            reportKey.current = {
+              fingerprint: pending.fingerprint,
+              key: pending.key,
+            };
+        } catch {
+          return;
+        }
+      }
+      if (!reportKey.current) return;
+      setReportNeedsReconcile(true);
+      setReportStatus(
+        'Status laporan berubah pada tab lain. Periksa status laporan untuk menyamakan hasil server.',
+      );
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  async function replayPendingReport() {
+    if (!active || !reportNeedsReconcile || !reportKey.current) return;
+    const target =
+      reportTargets.find((item) => item.key === reportTargetKey) ?? null;
+    if (
+      !target ||
+      !canReplayPendingReport(
+        reportKey.current.key,
+        localReportAttemptKey.current,
+        !!target && isValidReportDescription(reportDescription),
+      )
+    ) {
+      setReportsError(
+        'Isi laporan asli tidak tersedia. Periksa status; jangan membuat laporan baru sampai hasil upaya ini diketahui.',
+      );
+      return;
+    }
+    let observedAt: string;
+    try {
+      observedAt = new Date(toJakartaIso(reportObservedAt)).toISOString();
+    } catch {
+      setReportsError('Waktu laporan asli tidak valid; replay dibatalkan.');
+      return;
+    }
+    const input = {
+      active_journey_id: active.journey_id,
+      category: reportCategory,
+      observed_at: observedAt,
+      mobility_entity_id: target.id,
+      entity_type: target.type,
+      description: reportDescription.trim(),
+    };
+    const pending = reportKey.current;
+    if (`sha256:${await reportAttemptHash(input)}` !== pending.fingerprint) {
+      setReportsError(
+        'Isi laporan berubah sejak upaya tertunda. Kembalikan isi asli lalu replay, atau periksa status tanpa mengirim.',
+      );
+      return;
+    }
+    setReportsLoading(true);
+    setReportsError('');
+    try {
+      const send = async () => {
+        // Revalidate journey ownership after session changes, before any replay.
+        const journey = await passengerApi.getJourney(active.journey_id);
+        if (journey.status === 'COMPLETED')
+          throw new Error(
+            'Perjalanan selesai; hanya pemeriksaan status tersedia.',
+          );
+        const existing = await passengerApi.lookupReport(pending.key);
+        return existing ?? passengerApi.submitReport(input, pending.key);
+      };
+      const report = navigator.locks
+        ? await navigator.locks.request(
+            `transumin-report:${active.journey_id}`,
+            { mode: 'exclusive' },
+            send,
+          )
+        : await send();
+      if (!report) throw new Error('Server did not return report state.');
+      if (activeRef.current?.journey_id !== active.journey_id) return;
+      applyReconciledReport(report, active.journey_id);
+    } catch (cause) {
+      setReportsError(`Replay aman belum selesai: ${errorMessage(cause)}`);
+      setReportNeedsReconcile(true);
+    } finally {
+      setReportsLoading(false);
+    }
+  }
+
+  function applyReconciledReport(report: PassengerReport, journeyId: string) {
+    if (report.active_journey_id !== journeyId)
+      throw new Error('Report belongs to a different journey.');
+    setReports((current) => [
+      report,
+      ...current.filter((item) => item.report_id !== report.report_id),
+    ]);
+    setReportStatus(
+      `Laporan tersimpan ${report.report_id} · Belum diverifikasi. Tidak ada pengiriman ulang.`,
+    );
+    setReportDescription('');
+    setReportFormError('');
+    setReportNeedsReconcile(false);
+    localStorage.removeItem(`${reportPendingKey}.${journeyId}`);
+    reportKey.current = null;
+  }
+
   async function submitPassengerReport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!active) return;
+
+    if (!active || reportNeedsReconcile) return;
     setReportFormError('');
     setReportStatus('');
     const target =
@@ -839,15 +1067,86 @@ export function PassengerApp() {
       entity_type: target.type,
       description: reportDescription.trim(),
     };
-    const fingerprint = JSON.stringify(input);
-    if (reportKey.current?.fingerprint !== fingerprint)
-      reportKey.current = { fingerprint, key: crypto.randomUUID() };
+    const fingerprintHash = `sha256:${await reportAttemptHash(input)}`;
+    const storageKey = `${reportPendingKey}.${active.journey_id}`;
+    const allocateAttempt = () => {
+      let storedAttempt: {
+        fingerprint?: unknown;
+        key?: unknown;
+        createdAt?: unknown;
+      } | null = null;
+      try {
+        const stored = localStorage.getItem(storageKey);
+        storedAttempt = stored ? JSON.parse(stored) : null;
+      } catch {
+        try {
+          localStorage.removeItem(storageKey);
+        } catch {
+          void 0;
+        }
+      }
+      const isSameLogicalAttempt =
+        storedAttempt?.fingerprint === fingerprintHash;
+      const notExpired =
+        typeof storedAttempt?.createdAt === 'number' &&
+        Date.now() - storedAttempt.createdAt <= REPORT_PENDING_TTL_MS;
+      const storedKey =
+        typeof storedAttempt?.key === 'string' &&
+        /^[A-Za-z0-9._:-]{8,128}$/.test(storedAttempt.key)
+          ? storedAttempt.key
+          : null;
+      if (storedKey && notExpired && !isSameLogicalAttempt) {
+        reportKey.current = {
+          fingerprint: String(storedAttempt?.fingerprint),
+          key: storedKey,
+        };
+        setReportNeedsReconcile(true);
+        setReportFormError(
+          'Tab lain memiliki laporan tertunda. Periksa status sebelum membuat laporan baru.',
+        );
+        return null;
+      }
+      const attempt = {
+        fingerprint: fingerprintHash,
+        key:
+          isSameLogicalAttempt && notExpired && storedKey
+            ? storedKey
+            : reportKey.current?.fingerprint === fingerprintHash
+              ? reportKey.current.key
+              : crypto.randomUUID(),
+      };
+      try {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({
+            ...attempt,
+            createdAt:
+              isSameLogicalAttempt && notExpired
+                ? storedAttempt?.createdAt
+                : Date.now(),
+          }),
+        );
+      } catch {
+        setReportFormError(
+          'Penyimpanan browser tidak tersedia. Laporan tidak dikirim.',
+        );
+        return null;
+      }
+      return attempt;
+    };
+    const attempt = navigator.locks
+      ? await navigator.locks.request(
+          `transumin-report:${active.journey_id}`,
+          { mode: 'exclusive' },
+          allocateAttempt,
+        )
+      : allocateAttempt();
+    if (!attempt) return;
+    reportKey.current = attempt;
+    localReportAttemptKey.current = attempt.key;
     setBusy('report');
     try {
-      const report = await passengerApi.submitReport(
-        input,
-        reportKey.current.key,
-      );
+      const report = await passengerApi.submitReport(input, attempt.key);
       setReports((current) => [
         report,
         ...current.filter((item) => item.report_id !== report.report_id),
@@ -860,13 +1159,95 @@ export function PassengerApp() {
         }. Laporan bukan konfirmasi penutupan layanan dan tetap tersimpan setelah refresh.`,
       );
       setReportDescription('');
+      setReportNeedsReconcile(false);
+      localStorage.removeItem(`${reportPendingKey}.${active.journey_id}`);
       reportKey.current = null;
     } catch (cause) {
+      if (
+        active &&
+        cause instanceof PassengerApiError &&
+        (cause.code === 'REQUEST_TIMEOUT' || cause.code === 'NETWORK_ERROR')
+      ) {
+        setReportFormError(
+          cause.code === 'REQUEST_TIMEOUT'
+            ? 'Permintaan batas waktu habis. Status laporan belum pasti. Periksa status laporan sebelum mengirim lagi.'
+            : 'Koneksi terputus. Status laporan belum pasti. Periksa status laporan sebelum mengirim lagi.',
+        );
+        setReportNeedsReconcile(true);
+        return;
+      }
+      if (
+        cause instanceof PassengerApiError &&
+        cause.code === 'INVALID_RESPONSE'
+      ) {
+        setReportFormError(
+          'Respons server tidak valid. Muat status nyata sebelum mengirim laporan berikutnya.',
+        );
+        setReportNeedsReconcile(true);
+        return;
+      }
+      const apiError = cause instanceof PassengerApiError ? cause : null;
+      if (apiError?.status === 429 && apiError.code === 'RATE_LIMITED') {
+        // Authoritative pre-insert rejection, not an unknown mutation. Keep
+        // identity in memory for deliberate retry; reload has no pending write.
+        setReportNeedsReconcile(false);
+        try {
+          localStorage.removeItem(storageKey);
+        } catch {
+          // In-memory identity still prevents a new key on deliberate retry.
+        }
+        const retry =
+          typeof apiError.retryAfterSeconds === 'number'
+            ? ` Coba lagi dalam ${apiError.retryAfterSeconds} detik.`
+            : '';
+        setReportFormError(
+          `Batas pengiriman laporan telah tercapai. Anda dapat mencoba kembali setelah periode pembatasan berakhir.${retry}`,
+        );
+        return;
+      }
       setReportFormError(
         `Laporan gagal dikirim: ${errorMessage(cause)} Coba lagi.`,
       );
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function reconcileUnknownReport() {
+    const pending = reportKey.current;
+    const journeyId = active?.journey_id;
+    if (!pending || !journeyId) return;
+    // Exact identity: the server persists (owner, idempotency key) uniquely, so
+    // a key lookup is a definitive committed-or-not answer for this attempt.
+    setReportsLoading(true);
+    setReportsError('');
+    try {
+      let found = await passengerApi.lookupReport(pending.key);
+      for (const delay of [1000, 2000]) {
+        if (found) break;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        found = await passengerApi.lookupReport(pending.key);
+      }
+      if (activeRef.current?.journey_id !== journeyId) return;
+      if (found && found.active_journey_id !== journeyId)
+        throw new Error('Report belongs to a different journey.');
+      if (found) {
+        applyReconciledReport(found, journeyId);
+      } else {
+        // Null is deliberately ambiguous: the transaction may still be running,
+        // or this browser may now have a different owner session. Keep the key
+        // blocked; never replay it under an owner that cannot be proven equal.
+        setReportStatus(
+          'Laporan belum terlihat setelah 3 pemeriksaan. Request awal mungkin masih diproses atau sesi telah berubah. Jangan kirim ulang; periksa kembali status nanti.',
+        );
+        setReportNeedsReconcile(true);
+      }
+    } catch (cause) {
+      setReportsError(
+        `Status laporan belum dapat dipastikan: ${errorMessage(cause)}`,
+      );
+    } finally {
+      setReportsLoading(false);
     }
   }
 
@@ -896,9 +1277,27 @@ export function PassengerApp() {
     }
   }
 
-  async function proposeRecovery(alert: JourneyAlert) {
+  async function proposeRecovery(alert: JourneyAlert, fresh = false) {
     const current = activeRef.current;
     if (!current || !alertIsCurrent(alert)) return;
+    const scope = `${current.journey_id}:${alert.impact_id}:${current.progress?.revision ?? 0}:${current.accepted_recovery_id ?? 'G0'}`;
+    if (fresh && (!recovery || recoveryAttempt.current?.known !== true)) {
+      setError(
+        'Hasil recovery belum pasti. Coba lagi dengan identitas yang sama.',
+      );
+      return;
+    }
+    if (fresh) {
+      setRecovery(null);
+      setAcceptance(null);
+      setRecoveryStatus(null);
+      comparisonSource.current = null;
+    }
+    const prior =
+      recoveryAttempt.current?.scope === scope ? recoveryAttempt.current : null;
+    const attempt = nextRecoveryAttempt(prior, fresh);
+    const attemptNonce = attempt.nonce;
+    recoveryAttempt.current = { scope, ...attempt };
     const requestId = ++recoveryRequestId.current;
     recoveryRequest.current?.controller.abort();
     const controller = new AbortController();
@@ -913,6 +1312,7 @@ export function PassengerApp() {
         impactId: alert.impact_id,
         revision: source.revision,
         acceptedRecoveryId: source.acceptedRecoveryId,
+        attemptNonce,
       });
       const timeKey = `transumin.recovery-at.${key}`;
       let recoveryAt = localStorage.getItem(timeKey);
@@ -939,6 +1339,11 @@ export function PassengerApp() {
         result.original_journey_id !== source.journeyId
       )
         return;
+      recoveryAttempt.current = { ...recoveryAttempt.current, known: true };
+      comparisonSource.current = {
+        recoveryId: result.recovery_id,
+        journey: current,
+      };
       setRecovery(result);
       setAcceptance(null);
       acceptKey.current = null;
@@ -990,6 +1395,16 @@ export function PassengerApp() {
       );
       return;
     }
+    const original = recoveryComparisonSource(
+      current,
+      proposal,
+      comparisonSource.current,
+    );
+    if (original)
+      comparisonSource.current = {
+        recoveryId: proposal.recovery_id,
+        journey: original,
+      };
     const source = recoverySource(current);
     const generation = activeGeneration.current;
     const requestId = ++recoveryRequestId.current;
@@ -1097,6 +1512,16 @@ export function PassengerApp() {
   const reportTargetValid = reportTargets.some(
     (item) => item.key === reportTargetKey,
   );
+  const reportReplayAvailable = canReplayPendingReport(
+    reportKey.current?.key ?? null,
+    localReportAttemptKey.current,
+    reportTargetValid && isValidReportDescription(reportDescription),
+  );
+  const originalComparison = recoveryComparisonSource(
+    active,
+    recovery,
+    comparisonSource.current,
+  );
   const currentAlerts = alerts.filter(alertIsCurrent);
   const historicalAlerts = alerts.filter((alert) => !alertIsCurrent(alert));
   const boarding: { boarded: boolean; alighted: boolean } = {
@@ -1150,6 +1575,23 @@ export function PassengerApp() {
             <p>
               Compare routes using the available research network. Times are
               schedules or estimates, not live vehicle positions.
+            </p>
+            <p className="endpoint-note" role="status">
+              {planningHealth
+                ? `Planning service: ${
+                    planningHealth.status === 'AVAILABLE'
+                      ? `available (checked ${planningHealth.checkedAt})`
+                      : `unavailable since ${planningHealth.checkedAt}; planning may fail while the active journey stays intact`
+                  }.`
+                : 'Planning service status has not been checked yet.'}{' '}
+              <button
+                type="button"
+                className="text-button"
+                disabled={planningHealthBusy}
+                onClick={() => void refreshPlanningHealth()}
+              >
+                {planningHealthBusy ? 'Checking…' : 'Check planning service'}
+              </button>
             </p>
             <button
               type="button"
@@ -1391,6 +1833,7 @@ export function PassengerApp() {
                 key={journey.journey_id}
                 type="button"
                 className={`alternative ${selected?.journey_id === journey.journey_id ? 'selected' : ''}`}
+                data-journey-id={journey.journey_id}
                 onClick={() => setSelected(journey)}
                 onFocus={() => setSelected(journey)}
                 aria-pressed={selected?.journey_id === journey.journey_id}
@@ -2012,8 +2455,9 @@ export function PassengerApp() {
                       required
                       value={reportTargetValid ? reportTargetKey : ''}
                       onChange={(event) => {
+                        if (event.target.value !== reportTargetKey)
+                          resetReportAttempt();
                         setReportTargetKey(event.target.value);
-                        reportKey.current = null;
                         setError('');
                       }}
                       aria-invalid={reportTargetKey ? 'false' : undefined}
@@ -2040,8 +2484,9 @@ export function PassengerApp() {
                       id="report-category"
                       value={reportCategory}
                       onChange={(event) => {
+                        if (event.target.value !== reportCategory)
+                          resetReportAttempt();
                         setReportCategory(event.target.value);
-                        reportKey.current = null;
                       }}
                     >
                       <option value="CLEANLINESS">Kebersihan</option>
@@ -2060,8 +2505,9 @@ export function PassengerApp() {
                       required
                       value={reportObservedAt}
                       onChange={(event) => {
+                        if (event.target.value !== reportObservedAt)
+                          resetReportAttempt();
                         setReportObservedAt(event.target.value);
-                        reportKey.current = null;
                       }}
                     />
                   </label>
@@ -2074,8 +2520,9 @@ export function PassengerApp() {
                       rows={4}
                       value={reportDescription}
                       onChange={(event) => {
-                        setReportDescription(event.target.value);
-                        reportKey.current = null;
+                        const next = event.target.value;
+                        if (next !== reportDescription) resetReportAttempt();
+                        setReportDescription(next);
                       }}
                       aria-describedby="report-description-help"
                       aria-invalid={
@@ -2096,6 +2543,7 @@ export function PassengerApp() {
                     type="submit"
                     disabled={
                       busy !== null ||
+                      reportNeedsReconcile ||
                       !reportTargetValid ||
                       !reportDescription.trim()
                     }
@@ -2103,6 +2551,33 @@ export function PassengerApp() {
                     {busy === 'report' ? 'Mengirim…' : 'Kirim laporan'}
                   </button>
                 </form>
+              )}
+              {reportNeedsReconcile && (
+                <>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => void reconcileUnknownReport()}
+                    disabled={reportsLoading}
+                  >
+                    Periksa status laporan
+                  </button>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => void replayPendingReport()}
+                    disabled={reportsLoading || !reportReplayAvailable}
+                  >
+                    Kirim ulang identitas yang sama
+                  </button>
+                  {!reportReplayAvailable && (
+                    <p role="status" className="fine-print">
+                      Isi laporan asli tidak tersedia untuk replay aman. Hanya
+                      periksa status; identitas laporan tertunda tetap disimpan.
+                      Jangan membuat laporan baru sampai hasilnya diketahui.
+                    </p>
+                  )}
+                </>
               )}
               {reportFormError && (
                 <p role="alert" className="feedback error">
@@ -2363,6 +2838,28 @@ export function PassengerApp() {
                     fresh recovery before using it.
                   </p>
                 )}
+                {(() => {
+                  const freshAlert =
+                    currentAlerts.find(
+                      (a) => a.impact_id === recovery.impact_id,
+                    ) ??
+                    currentAlerts[0] ??
+                    null;
+                  const known = recoveryAttempt.current?.known === true;
+                  const freshAllowed = !!freshAlert && busy === null && known;
+                  return freshAlert ? (
+                    <button
+                      type="button"
+                      className="text-button"
+                      disabled={!freshAllowed}
+                      onClick={() => void proposeRecovery(freshAlert, true)}
+                      aria-label="Try a fresh alternative"
+                      data-known={known ? 'true' : 'false'}
+                    >
+                      Try a fresh alternative
+                    </button>
+                  ) : null;
+                })()}
                 {recovery.status === 'COMPLETED' &&
                   recovery.proposed_journey &&
                   (acceptance || recovery.accepted ? (
@@ -2393,40 +2890,47 @@ export function PassengerApp() {
                   <div>
                     <h3>Original remaining trip</h3>
                     <ol className="compact-legs">
-                      {active.segments
-                        .filter(
-                          (segment) =>
-                            segment.sequence >=
-                            recovery.completed_segment_count,
-                        )
-                        .map((segment) => (
-                          <li key={segment.sequence}>
-                            <span
-                              className={`structure-tag ${recoveryPart(segment.sequence, recovery).toLowerCase()}`}
-                            >
-                              {alerts.some(
-                                (alert) =>
-                                  alert.impact_id === recovery.impact_id &&
-                                  alert.affected_segment_sequences.includes(
-                                    segment.sequence,
-                                  ),
-                              )
-                                ? 'Affected by disruption'
-                                : recoveryPartLabel(
-                                    recoveryPart(segment.sequence, recovery),
-                                  )}
-                            </span>
-                            <strong>
-                              {modeName(segment.mode)}
-                              {passengerRouteName(segment)
-                                ? ` ${passengerRouteName(segment)}`
-                                : ''}
-                            </strong>
-                            <small>
-                              {segment.from.name} → {segment.to.name}
-                            </small>
-                          </li>
-                        ))}
+                      {originalComparison ? (
+                        originalComparison.segments
+                          .filter(
+                            (segment) =>
+                              segment.sequence >=
+                              recovery.completed_segment_count,
+                          )
+                          .map((segment) => (
+                            <li key={segment.sequence}>
+                              <span
+                                className={`structure-tag ${recoveryPart(segment.sequence, recovery).toLowerCase()}`}
+                              >
+                                {alerts.some(
+                                  (alert) =>
+                                    alert.impact_id === recovery.impact_id &&
+                                    alert.affected_segment_sequences.includes(
+                                      segment.sequence,
+                                    ),
+                                )
+                                  ? 'Affected by disruption'
+                                  : recoveryPartLabel(
+                                      recoveryPart(segment.sequence, recovery),
+                                    )}
+                              </span>
+                              <strong>
+                                {modeName(segment.mode)}
+                                {passengerRouteName(segment)
+                                  ? ` ${passengerRouteName(segment)}`
+                                  : ''}
+                              </strong>
+                              <small>
+                                {segment.from.name} → {segment.to.name}
+                              </small>
+                            </li>
+                          ))
+                      ) : (
+                        <li>
+                          Original remaining trip unavailable after refresh;
+                          server lineage does not expose this proposal source.
+                        </li>
+                      )}
                     </ol>
                   </div>
                   <div>
@@ -2436,14 +2940,14 @@ export function PassengerApp() {
                         {recovery.proposed_journey.segments.map((segment) => (
                           <li key={segment.sequence}>
                             <span className="structure-tag">
-                              {active.segments.some(
+                              {originalComparison?.segments.some(
                                 (original) =>
                                   recovery.rejoined_segments.includes(
                                     original.sequence,
                                   ) && samePassengerLeg(original, segment),
                               )
                                 ? 'Rejoins original trip'
-                                : active.segments.some(
+                                : originalComparison?.segments.some(
                                       (original) =>
                                         recovery.preserved_segments.includes(
                                           original.sequence,
@@ -2451,7 +2955,9 @@ export function PassengerApp() {
                                         samePassengerLeg(original, segment),
                                     )
                                   ? 'Stays the same'
-                                  : 'New connection'}
+                                  : originalComparison
+                                    ? 'New connection'
+                                    : 'Original comparison unavailable'}
                             </span>
                             <strong>
                               {modeName(segment.mode)}
@@ -2495,6 +3001,26 @@ export function PassengerApp() {
                 </details>
               </section>
             )}
+          <CopilotDrawer
+            key={
+              recovery?.recovery_id
+                ? `recovery:${recovery.recovery_id}`
+                : active
+                  ? `journey:${active.journey_id}`
+                  : 'none'
+            }
+            journeyId={
+              recovery?.recovery_id
+                ? undefined
+                : (active?.journey_id ?? selected?.journey_id ?? undefined)
+            }
+            recoveryId={recovery?.recovery_id ?? undefined}
+            defaultQuestion={
+              recovery?.recovery_id
+                ? 'Explain this recovery proposal and its evidence.'
+                : 'Explain this route and its legs.'
+            }
+          />
         </aside>
       </div>
     </main>

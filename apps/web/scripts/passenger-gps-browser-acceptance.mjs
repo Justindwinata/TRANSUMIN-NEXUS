@@ -4,6 +4,12 @@ import { fileURLToPath } from 'node:url';
 
 import { chromium } from 'playwright-core';
 
+import { assertCp2Runtime } from './cp2-runtime-guard.mjs';
+
+// Fail closed: this suite mutates journeys/progress and must never target the
+// shared product runtime. Run via `pnpm data:browser:isolated --suite=GPS`.
+await assertCp2Runtime();
+
 const webUrl = process.env.PASSENGER_WEB_URL ?? 'http://127.0.0.1:3000';
 const chromePath =
   process.env.PRODUCT_P1R_CHROME ??
@@ -12,6 +18,17 @@ const repositoryRoot = resolve(
   fileURLToPath(new URL('../../..', import.meta.url)),
 );
 const gpsRequestPattern = /(?:geo(?:location)?|gps|location)/i;
+
+function jakarta(at) {
+  // datetime-local value in +07:00; UI converts it with toJakartaIso().
+  return new Date(Date.parse(at) + 7 * 3600_000).toISOString().slice(0, 16);
+}
+
+async function fillProgressTime(page, time) {
+  await page
+    .getByLabel('Progress time (Jakarta, controlled)')
+    .fill(jakarta(time));
+}
 
 async function waitForApp(page) {
   await page.goto(webUrl, { waitUntil: 'domcontentloaded' });
@@ -69,7 +86,9 @@ async function loadAndActivate(page) {
       response.request().method() === 'POST',
   );
   await page.getByRole('button', { name: 'Mulai Perjalanan' }).click();
-  assert.equal((await activation).status(), 201, 'Real activation failed.');
+  const activated = await activation;
+  assert.equal(activated.status(), 201, 'Real activation failed.');
+  const active = (await activated.json()).data;
   await page
     .getByRole('heading', { name: 'Your active journey' })
     .waitFor({ timeout: 30_000 });
@@ -86,6 +105,7 @@ async function loadAndActivate(page) {
     'GPS not OFF by default.',
   );
   await page.getByText('Lokasi perangkat (opsional)').click();
+  return active;
 }
 
 async function assertNoGpsPersistence(page) {
@@ -115,18 +135,38 @@ async function requestLocation(page) {
   );
 }
 
-async function advanceManually(page) {
+async function advanceManually(page, active) {
   const before = await page.locator('.progress-actions').innerText();
   assert.match(before, /0 of \d+ parts complete/);
-  const boarding = page.getByRole('button', { name: 'Saya Sudah Naik' });
-  if (await boarding.count()) {
-    await boarding.click();
-    await page.getByRole('button', { name: 'Saya Sudah Turun' }).click();
+  const leg = active.segments[0];
+  async function mutate(button, suffix, method) {
+    const pending = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/journeys/${active.journey_id}/${suffix}`) &&
+        response.request().method() === method,
+    );
+    await page.getByRole('button', { name: button }).click();
+    const response = await pending;
+    const body = await response.json();
+    assert.ok(
+      response.ok(),
+      `${suffix}: ${response.status()} ${JSON.stringify(body)}`,
+    );
+    return body.data;
   }
-  const advance = page.getByRole('button', {
-    name: /Lanjutkan Perjalanan|Selesaikan Perjalanan/,
-  });
-  await advance.click();
+  if (leg.mode !== 'WALK') {
+    await fillProgressTime(page, leg.start_at);
+    await mutate('Saya Sudah Naik', `boarding/${leg.sequence}`, 'POST');
+    await fillProgressTime(page, leg.end_at);
+    await mutate('Saya Sudah Turun', `alighting/${leg.sequence}`, 'POST');
+  }
+  await fillProgressTime(page, active.segments[1]?.start_at ?? leg.end_at);
+  const progressed = await mutate(
+    /Lanjutkan Perjalanan|Selesaikan Perjalanan/,
+    'progress',
+    'PATCH',
+  );
+  assert.equal(progressed.progress.completed_segment_count, 1);
   await page.getByText(/1 of \d+ parts complete/).waitFor();
   assert.match(
     await page.locator('.progress-actions').innerText(),
@@ -137,7 +177,10 @@ async function advanceManually(page) {
 const browser = await chromium.launch({
   executablePath: chromePath,
   headless: true,
-  args: ['--deny-permission-prompts'],
+  args: [
+    '--deny-permission-prompts',
+    ...(webUrl.startsWith('https:') ? ['--ignore-certificate-errors'] : []),
+  ],
 });
 const gpsRequests = [];
 try {
@@ -149,7 +192,7 @@ try {
   deniedPage.on('request', (request) => {
     if (gpsRequestPattern.test(request.url())) gpsRequests.push(request.url());
   });
-  await loadAndActivate(deniedPage);
+  const deniedActive = await loadAndActivate(deniedPage);
   const permissionState = await deniedPage.evaluate(
     async () =>
       (await navigator.permissions.query({ name: 'geolocation' })).state,
@@ -161,7 +204,7 @@ try {
   );
   await requestLocation(deniedPage);
   await assertNoGpsPersistence(deniedPage);
-  await advanceManually(deniedPage);
+  await advanceManually(deniedPage, deniedActive);
   await assertNoGpsPersistence(deniedPage);
 
   const unsupported = await browser.newContext({
@@ -177,7 +220,7 @@ try {
   unsupportedPage.on('request', (request) => {
     if (gpsRequestPattern.test(request.url())) gpsRequests.push(request.url());
   });
-  await loadAndActivate(unsupportedPage);
+  const unsupportedActive = await loadAndActivate(unsupportedPage);
   if (
     (await unsupportedPage
       .getByRole('button', { name: 'Aktifkan Lokasi Langsung' })
@@ -191,15 +234,14 @@ try {
     .getByText(/Peramban ini tidak mendukung lokasi perangkat/)
     .waitFor();
   await assertNoGpsPersistence(unsupportedPage);
-  await advanceManually(unsupportedPage);
+  await advanceManually(unsupportedPage, unsupportedActive);
   await assertNoGpsPersistence(unsupportedPage);
 
   assert.deepEqual(gpsRequests, [], 'GPS/location network request detected.');
   console.log(
     JSON.stringify({
       status: 'PASS',
-      evidence:
-        'real presentation scenario plan/activate through 127.0.0.1:3000 proxy',
+      evidence: `real presentation scenario plan/activate through ${webUrl} proxy`,
       chromium_permission: permissionState,
       gps_default: 'OFF',
       denied_context:

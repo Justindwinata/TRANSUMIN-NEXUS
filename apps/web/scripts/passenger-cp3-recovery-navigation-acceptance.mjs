@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { assertCp2Runtime } from './cp2-runtime-guard.mjs';
+import { runSequentialRecoveryCheck } from './passenger-sequential-recovery-check.mjs';
 
 /**
  * Library-derived navigation identities (G1-D). Node 22 type-stripping imports
@@ -78,20 +79,33 @@ function attrs(page) {
       : null;
   });
 }
+let stage = 'runtime-identity';
+let failureDiagnostic;
+function assertResponse(response, endpoint, expected) {
+  const status = response.status();
+  if (!expected.includes(status)) {
+    // Only caller-owned route templates and numeric statuses enter diagnostics.
+    failureDiagnostic = `${endpoint}: expected ${expected.join(' or ')}, received ${status}`;
+    assert.fail(failureDiagnostic);
+  }
+}
 async function direct(path, options = {}) {
-  const response = await fetch(`${apiUrl}/${path}`, {
-    ...options,
-    headers: {
-      accept: 'application/json',
-      ...(options.body ? { 'content-type': 'application/json' } : {}),
-      ...options.headers,
+  const response = await fetch(
+    `${path.startsWith('controlled/') ? (process.env.CONTROLLED_REVIEW_API_URL ?? apiUrl) : apiUrl}/${path}`,
+    {
+      ...options,
+      headers: {
+        accept: 'application/json',
+        ...(options.body ? { 'content-type': 'application/json' } : {}),
+        ...options.headers,
+      },
     },
-  });
-  const body = await response.json().catch(() => null);
-  assert.ok(
-    response.ok,
-    `${options.method ?? 'GET'} ${path}: ${response.status} ${JSON.stringify(body)}`,
   );
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    failureDiagnostic = `POST /api/v1/controlled/passenger-reports/:reportId/verify: HTTP ${response.status}`;
+    assert.fail(failureDiagnostic);
+  }
   return body?.data;
 }
 /**
@@ -145,6 +159,7 @@ await assertCp2Runtime();
 const browser = await chromium.launch({
   executablePath: chromePath,
   headless: true,
+  args: webUrl.startsWith('https:') ? ['--ignore-certificate-errors'] : [],
 });
 const summary = {
   status: 'PASS',
@@ -153,6 +168,7 @@ const summary = {
 };
 try {
   const context = await browser.newContext({
+    ignoreHTTPSErrors: true,
     viewport: { width: 390, height: 844 },
     permissions: ['geolocation'],
   });
@@ -164,6 +180,7 @@ try {
     .getByRole('button', { name: /Load presentation scenario/ })
     .waitFor();
 
+  stage = 'reactive-plan';
   const planResponse = page.waitForResponse(
     (r) =>
       r.url().endsWith('/api/passenger/journeys/plan') &&
@@ -174,7 +191,7 @@ try {
     .getByRole('button', { name: /Load presentation scenario/ })
     .click();
   const plan = await planResponse;
-  assert.equal(plan.status(), 201);
+  assertResponse(plan, 'POST /api/passenger/journeys/plan', [201]);
   const planned = await plan.json();
   const candidate = planned.data.find((j) => j.segments?.[0]?.mode === 'WALK');
   assert.ok(candidate, 'OTP plan has no WALK-first candidate');
@@ -192,8 +209,13 @@ try {
     (r) => r.url().includes('/activate') && r.request().method() === 'POST',
   );
   await page.getByRole('button', { name: 'Mulai Perjalanan' }).click();
+  stage = 'reactive-activate';
   const activatedResponse = await activation;
-  assert.ok([200, 201].includes(activatedResponse.status()));
+  assertResponse(
+    activatedResponse,
+    'POST /api/passenger/journeys/:journeyId/activate',
+    [200, 201],
+  );
   const activated = (await activatedResponse.json()).data;
   summary.active_journey_id = activated.journey_id;
   const sessionCookie = (await context.cookies()).find(
@@ -251,6 +273,7 @@ try {
   );
   summary.old_maneuver_advanced_before_progress = true;
   summary.leg_progressed = true;
+  stage = 'reactive-progress';
   const progressResponse = page.waitForResponse(
     (r) =>
       r
@@ -259,7 +282,12 @@ try {
       r.request().method() === 'PATCH',
   );
   await page.getByRole('button', { name: 'Lanjutkan Perjalanan' }).click();
-  assert.equal((await progressResponse).status(), 200);
+  const progressed = await progressResponse;
+  assertResponse(
+    progressed,
+    'PATCH /api/passenger/journeys/:journeyId/progress',
+    [200],
+  );
   const activeAfterWalkProgress = await readJourney(page, activated.journey_id);
   assert.equal(
     activeAfterWalkProgress.data.progress.completed_segment_count,
@@ -282,8 +310,18 @@ try {
 
   // G1-D base map observation before R1: exact digest of server geometry with
   // the same filter/hash/feature identity that journey-map.tsx serializes.
-  const baseActual = await readMapObservability(page);
+  stage = 'base-map-parity';
   const baseExpected = expectedMapFingerprint(activeAfterWalkProgress.data);
+  await page.waitForFunction(
+    (expected) =>
+      (
+        document.querySelector('.map-frame') ??
+        document.querySelector('.maplibre-frame')
+      )?.getAttribute('data-route-source-fingerprint') === expected,
+    baseExpected.join('|'),
+    { timeout: 15000 },
+  );
+  const baseActual = await readMapObservability(page);
   assert.ok(baseActual.hasFrame, 'map frame (.map-frame) missing before R1');
   assert.ok(
     typeof baseActual.fingerprint === 'string' &&
@@ -322,11 +360,11 @@ try {
   );
   await page.getByRole('button', { name: 'Kirim laporan' }).click();
   const submittedResponse = await submittedReport;
-  const submittedBody = await submittedResponse.json().catch(() => null);
-  assert.equal(
-    submittedResponse.status(),
-    201,
-    `report submit failed: ${JSON.stringify(submittedBody)}`,
+  stage = 'passenger-report-submit';
+  assertResponse(
+    submittedResponse,
+    'POST /api/passenger/passenger-reports',
+    [201],
   );
   await page
     .getByText(/Laporan tersimpan .*Belum diverifikasi/)
@@ -348,6 +386,7 @@ try {
       process.env.CONTROLLED_REVIEW_TOKEN.length >= 32,
     'controlled reviewer token missing',
   );
+  stage = 'controlled-report-verification';
   const verified = await direct(
     `controlled/passenger-reports/${reportId}/verify`,
     {
@@ -380,11 +419,13 @@ try {
   summary.targeted_alert = true;
 
   const otherContext = await browser.newContext({
+    ignoreHTTPSErrors: true,
     viewport: { width: 390, height: 844 },
   });
   let otherOwner;
   try {
     const otherPage = await otherContext.newPage();
+    stage = 'other-owner-plan';
     await otherPage.goto(webUrl, { waitUntil: 'domcontentloaded' });
     await otherPage
       .getByRole('button', { name: /Load presentation scenario/ })
@@ -398,7 +439,12 @@ try {
     await otherPage
       .getByRole('button', { name: /Load presentation scenario/ })
       .click();
-    assert.equal((await otherPlan).status(), 201);
+    const otherPlanResponse = await otherPlan;
+    assertResponse(
+      otherPlanResponse,
+      'POST /api/passenger/journeys/plan',
+      [201],
+    );
     await otherPage
       .getByRole('region', { name: 'Journey choices' })
       .getByRole('button')
@@ -408,7 +454,13 @@ try {
       (r) => r.url().includes('/activate') && r.request().method() === 'POST',
     );
     await otherPage.getByRole('button', { name: 'Mulai Perjalanan' }).click();
-    assert.ok([200, 201].includes((await otherActivation).status()));
+    stage = 'other-owner-activate';
+    const otherActivationResponse = await otherActivation;
+    assertResponse(
+      otherActivationResponse,
+      'POST /api/passenger/journeys/:journeyId/activate',
+      [200, 201],
+    );
     await otherPage
       .getByRole('heading', { name: 'Your active journey' })
       .waitFor({ timeout: 30000 });
@@ -435,6 +487,7 @@ try {
       `ASSERT alert.owner_targeted=true unaffected_owner_alerts=${otherAlerts}`,
     );
 
+    stage = 'initial-recovery-proposal';
     const recoveryResponse = page.waitForResponse(
       (r) => r.url().endsWith('/recoveries') && r.request().method() === 'POST',
       { timeout: 120000 },
@@ -463,6 +516,7 @@ try {
   // then arrives after a newer controlled remount (new mount generation and
   // request id) must not commit any recovery state. Real proposal via routing —
   // no fabricated response.
+  stage = 'delayed-proposal-remount';
   const recoveryStorageKey = `transumin.passenger.recovery.${activated.journey_id}`;
   await page.evaluate(
     (key) => localStorage.removeItem(key),
@@ -521,6 +575,7 @@ try {
 
   // Fresh authoritative proposal after the remount: proves the guard dropped only
   // the stale response, not the capability.
+  stage = 'fresh-proposal-after-remount';
   await page
     .getByRole('region', { name: 'Journey updates' })
     .getByRole('article', { name: 'Targeted journey alert' })
@@ -544,9 +599,28 @@ try {
     'fresh recovery proposal missing after remount',
   );
 
+  const originalColumn = page
+    .getByRole('region', { name: 'Recovery option', exact: true })
+    .locator('.comparison-grid > div')
+    .first();
+  const proposalSource = (await readJourney(page, activated.journey_id)).data;
+  const originalTail = proposalSource.segments
+    .filter(
+      (segment) =>
+        segment.sequence >= freshProposal.data.completed_segment_count,
+    )
+    .map((segment) => `${segment.from.name} → ${segment.to.name}`);
+  assert.ok(originalTail.length, 'proposal source has no remaining legs');
+  assert.deepEqual(
+    await originalColumn.locator('li small').allTextContents(),
+    originalTail,
+    'original comparison differs from authoritative proposal source tail',
+  );
+
   // G1-A lost-response: the acceptance POST reaches the server (real commit) but
   // the response is aborted. The client must reconcile from authoritative reads,
   // must not retry the mutation, and must not fabricate a success state.
+  stage = 'recovery-acceptance-reconciliation';
   let acceptancePosts = 0;
   let acceptRealStatus = null;
   const acceptPattern = '**/api/passenger/recoveries/*/accept';
@@ -572,12 +646,21 @@ try {
     [200, 201].includes(acceptRealStatus),
     `real acceptance response status ${String(acceptRealStatus)}`,
   );
+  assert.deepEqual(
+    await originalColumn.locator('li small').allTextContents(),
+    originalTail,
+    'accepted recovery replaced original comparison with repaired segments',
+  );
+  console.error(
+    'ASSERT recovery.original_comparison retained_source_tail=true',
+  );
   summary.lost_acceptance_response_reconciled = true;
   summary.acceptance_post_count = acceptancePosts;
   console.error(
     `ASSERT stale.lost_acceptance_response reconciled=true posts=${acceptancePosts} real_status=${String(acceptRealStatus)}`,
   );
 
+  stage = 'accepted-itinerary-parity';
   const after = await attrs(page);
   const postAccept = await readJourney(page, activated.journey_id);
   summary.accepted_recovery_id = postAccept.data.accepted_recovery_id;
@@ -782,9 +865,37 @@ try {
     .waitFor({ timeout: 30000 });
   await page.getByText(/Recovery accepted/).waitFor({ timeout: 30000 });
   summary.refresh_after_recovery = true;
+  const refreshedOriginalColumn = page
+    .getByRole('region', { name: 'Recovery option', exact: true })
+    .locator('.comparison-grid > div')
+    .first();
+  await refreshedOriginalColumn
+    .getByText(/Original remaining trip unavailable after refresh/i)
+    .waitFor({ timeout: 30000 });
+  assert.equal(
+    await refreshedOriginalColumn.locator('li small').count(),
+    0,
+    'refresh fabricated original comparison legs without proposal source',
+  );
+  console.error(
+    'ASSERT refresh.original_comparison unavailable_without_proposal_payload=true',
+  );
   console.log(
     'ASSERT refresh.after_recovery accepted_itinerary_persisted=true',
   );
+
+  if (process.env.R7_SEQUENTIAL_RECOVERY === '1') {
+    stage = 'sequential-recovery';
+    await runSequentialRecoveryCheck({
+      page,
+      journeyId: activated.journey_id,
+      firstReportId: reportId,
+      direct,
+      expectedMapFingerprint,
+      nav,
+      summary,
+    });
+  }
 
   // Continue via controlled manual boarding/alighting/progression until server marks completion.
   for (let i = 0; i < 12; i += 1) {
@@ -835,7 +946,12 @@ try {
   console.error(
     JSON.stringify({
       status: 'NOT_VERIFIED',
-      message: error instanceof Error ? error.message : String(error),
+      stage,
+      // Sanitized: owned route template + numeric status only.
+      failed_request: failureDiagnostic ?? null,
+      message:
+        failureDiagnostic ??
+        'Browser assertion or operation failed; raw error withheld',
     }),
   );
   process.exitCode = 1;

@@ -15,15 +15,19 @@ import { KyselyIncidentLifecycleRepository } from './infrastructure/kysely-incid
 import { KyselySourceHealthRepository } from './infrastructure/kysely-source-health.repository.js';
 import { OperationalEventsController } from './interface/operational-events.controller.js';
 import { DisruptionIntelligenceController } from './interface/disruption-intelligence.controller.js';
-import { InternalResearchGuard } from './interface/internal-research.guard.js';
+import { AuthModule } from '../auth/auth.module.js';
 
 @Module({
-  imports: [DatabaseModule, OperationalDataModule, MobilityTwinModule],
+  imports: [
+    DatabaseModule,
+    OperationalDataModule,
+    MobilityTwinModule,
+    AuthModule,
+  ],
   controllers: [OperationalEventsController, DisruptionIntelligenceController],
   providers: [
     AiIncidentPipeline,
     DisruptionIntelligenceService,
-    InternalResearchGuard,
     LiveOperationalGateway,
     OperationalEventBus,
     KyselyOperationalEntityResolver,

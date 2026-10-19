@@ -104,6 +104,12 @@ const STATES = ['DEGRADED', 'DISRUPTED', 'UNAVAILABLE', 'RECOVERING'] as const;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export class PassengerReportRateLimitException extends HttpException {
+  constructor(readonly retryAfterSeconds: number) {
+    super('Passenger report limit reached.', 429);
+  }
+}
+
 @Injectable()
 export class PassengerReportService {
   constructor(
@@ -166,13 +172,23 @@ export class PassengerReportService {
           );
         return this.map(existing.rows[0]);
       }
+      // Transaction time predates lock waits. Capture wall time once, after lock
+      // and replay lookup; the tenth newest row frees the next slot, even for legacy overages.
       const recent = await sql<{
-        count: number;
-      }>`select count(*)::int as count from report.passenger_report where owner_ref=${input.ownerRef} and created_at > now() - interval '10 minutes'`.execute(
-        tx,
-      );
-      if ((recent.rows[0]?.count ?? 0) >= 10)
-        throw new HttpException('Passenger report limit reached.', 429);
+        checkedAt: string;
+        retryAfterSeconds: number | null;
+      }>`with quota_clock as materialized (select clock_timestamp() as checked_at)
+        select checked_at::text as "checkedAt",
+          (select greatest(0, ceil(extract(epoch from
+            (created_at + interval '10 minutes' - checked_at))))::int
+           from report.passenger_report
+           where owner_ref=${input.ownerRef}
+             and created_at > checked_at - interval '10 minutes'
+           order by created_at desc offset 9 limit 1) as "retryAfterSeconds"
+        from quota_clock`.execute(tx);
+      const quota = recent.rows[0]!;
+      if (quota.retryAfterSeconds !== null)
+        throw new PassengerReportRateLimitException(quota.retryAfterSeconds);
       const entity = await sql<{
         type: string;
       }>`select entity_type as type from twin.mobility_entity where id=${input.entityId}::uuid`.execute(
@@ -183,12 +199,32 @@ export class PassengerReportService {
           'Target entity is unknown or type does not match.',
         );
       if (input.journeyId !== null) {
+        const journeyState = await sql<{
+          lifecycle: string;
+        }>`select lifecycle_status as lifecycle from journey.active_journey where journey_id=${input.journeyId}::uuid for update`.execute(
+          tx,
+        );
+        if (journeyState.rows[0]?.lifecycle === 'COMPLETED')
+          throw new BadRequestException('Journey is completed.');
         const selected = await sql<{
           ownerRef: string;
           entityId: string;
-        }>`select p.owner_ref as "ownerRef", d.mobility_entity_id as "entityId" from journey.journey_plan p join journey.journey_dependency d on d.journey_id=p.id where p.id=${input.journeyId}::uuid and d.mobility_entity_id=${input.entityId}::uuid`.execute(
-          tx,
-        );
+        }>`select p.owner_ref as "ownerRef", d.mobility_entity_id as "entityId"
+          from journey.journey_plan p
+          join (
+            select d.journey_id, d.mobility_entity_id
+            from journey.journey_dependency d
+            left join journey.active_journey a on a.journey_id=d.journey_id
+            where a.accepted_recovery_id is null
+            union all
+            select d.journey_id, d.mobility_entity_id
+            from journey.active_journey_dependency d
+            join journey.active_journey a
+              on a.journey_id=d.journey_id
+             and a.accepted_recovery_id=d.recovery_id
+          ) d on d.journey_id=p.id
+          where p.id=${input.journeyId}::uuid
+            and d.mobility_entity_id=${input.entityId}::uuid`.execute(tx);
         if (selected.rows.length === 0)
           throw new NotFoundException('Journey or selected target not found.');
         if (selected.rows[0]?.ownerRef !== input.ownerRef)
@@ -200,6 +236,21 @@ export class PassengerReportService {
         );
       return this.map(inserted.rows[0]!);
     });
+  }
+
+  async lookupByIdempotencyKey(
+    ownerRef: string,
+    key: string,
+  ): Promise<Record<string, unknown> | null> {
+    if (!validReference(ownerRef))
+      throw new BadRequestException('Invalid owner.');
+    if (!/^[A-Za-z0-9._:-]{8,128}$/.test(key))
+      throw new BadRequestException('idempotency_key must be 8-128 chars.');
+    const result =
+      await sql<ReportRow>`select id, owner_ref as "ownerRef", active_journey_id as "activeJourneyId", category, observation_time as "observationTime", received_at as "receivedAt", mobility_entity_id as "mobilityEntityId", entity_type as "entityType", description, source, verification_status as "verificationStatus", request_fingerprint as "requestFingerprint" from report.passenger_report where owner_ref=${ownerRef} and idempotency_key=${key}`.execute(
+        this.database,
+      );
+    return result.rows[0] ? this.map(result.rows[0]) : null;
   }
 
   async list(
@@ -248,13 +299,39 @@ export class PassengerReportService {
       await sql`select pg_advisory_xact_lock(hashtext(${`passenger-review:${id}`}))`.execute(
         tx,
       );
-      const row = await sql<
-        ReportRow & { mode: string | null }
-      >`select r.id, r.owner_ref as "ownerRef", r.active_journey_id as "activeJourneyId", r.category, r.observation_time as "observationTime", r.received_at as "receivedAt", r.mobility_entity_id as "mobilityEntityId", r.entity_type as "entityType", r.description, r.source, r.verification_status as "verificationStatus", r.request_fingerprint as "requestFingerprint", (select d.product_mode from journey.journey_dependency d where d.journey_id=r.active_journey_id and d.mobility_entity_id=r.mobility_entity_id limit 1) as mode from report.passenger_report r where r.id=${id}::uuid for update`.execute(
-        tx,
-      );
+      const row =
+        await sql<ReportRow>`select r.id, r.owner_ref as "ownerRef", r.active_journey_id as "activeJourneyId", r.category, r.observation_time as "observationTime", r.received_at as "receivedAt", r.mobility_entity_id as "mobilityEntityId", r.entity_type as "entityType", r.description, r.source, r.verification_status as "verificationStatus", r.request_fingerprint as "requestFingerprint" from report.passenger_report r where r.id=${id}::uuid for update`.execute(
+          tx,
+        );
       const target = row.rows[0];
       if (!target) throw new NotFoundException('Report not found.');
+      // Resolve the current-generation mode: once a recovery is accepted the
+      // replacement dependency is authoritative; the immutable original plan
+      // only supplies mode while no accepted generation exists.
+      let mode: string | null = null;
+      if (target.activeJourneyId !== null) {
+        await sql`select 1 from journey.active_journey where journey_id=${target.activeJourneyId}::uuid for update`.execute(
+          tx,
+        );
+        const resolved = await sql<{
+          mode: string;
+        }>`select d.product_mode as mode from (
+            select d.journey_id, d.mobility_entity_id, d.product_mode
+            from journey.journey_dependency d
+            left join journey.active_journey a on a.journey_id=d.journey_id
+            where a.accepted_recovery_id is null
+            union all
+            select d.journey_id, d.mobility_entity_id, d.product_mode
+            from journey.active_journey_dependency d
+            join journey.active_journey a
+              on a.journey_id=d.journey_id
+             and a.accepted_recovery_id=d.recovery_id
+          ) d
+          where d.journey_id=${target.activeJourneyId}::uuid
+            and d.mobility_entity_id=${target.mobilityEntityId}::uuid
+          limit 1`.execute(tx);
+        mode = resolved.rows[0]?.mode ?? null;
+      }
       const pending = await sql<{
         evidence: IncidentEvidenceInput;
         reviewerRef: string;
@@ -276,7 +353,7 @@ export class PassengerReportService {
       }
       if (target.verificationStatus === 'CONTROLLED_VERIFIED')
         throw new ConflictException('Report already reviewed.');
-      if (!target.mode)
+      if (!mode)
         throw new BadRequestException(
           'Report target has no supported journey mode.',
         );
@@ -287,9 +364,7 @@ export class PassengerReportService {
         incidentId: deterministicIncidentId,
         incidentType: incidentType as IncidentEvidenceInput['incidentType'],
         affectedEntityIds: [target.mobilityEntityId],
-        affectedModes: [
-          target.mode as IncidentEvidenceInput['affectedModes'][number],
-        ],
+        affectedModes: [mode as IncidentEvidenceInput['affectedModes'][number]],
         operationalState: state as IncidentEvidenceInput['operationalState'],
         sourceClass: 'SIMULATED',
         sourceId: id,

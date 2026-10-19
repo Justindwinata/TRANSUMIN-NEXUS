@@ -31,7 +31,28 @@ import {
   normalizeLeg,
   normalizeWalkingSteps,
   parseNamespacedId,
+  OtpJourneyRoutingAdapter,
 } from './infrastructure/otp-journey-routing.adapter.js';
+
+describe('OTP manifested service-date guard', () => {
+  it('rejects dates outside router manifest before OTP request', async () => {
+    const adapter = new OtpJourneyRoutingAdapter();
+    await assert.rejects(
+      adapter.planJourney({
+        origin: { latitude: -6.2, longitude: 106.8 },
+        destination: { latitude: -6.21, longitude: 106.81 },
+        departureAt: '2000-01-01T08:00:00+07:00',
+        preference: 'BALANCED',
+        allowedModes: ['TRANSJAKARTA'],
+        excludedRouteIds: [],
+        attempt: 1,
+        networkSnapshotId: '43fb9a29-0c89-5c72-8826-e3dc2adcfb1f',
+      }),
+      (error: unknown) =>
+        (error as JourneyRoutingError).code === 'INVALID_TIME',
+    );
+  });
+});
 
 const snapshot: NetworkSnapshot = {
   snapshotId: '43fb9a29-0c89-5c72-8826-e3dc2adcfb1f',

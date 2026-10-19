@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 
 import { assertCp2Runtime } from './cp2-runtime-guard.mjs';
+import { assertActiveSessionExpiry } from './passenger-active-session-expiry-acceptance.mjs';
 
 const webUrl = process.env.PASSENGER_WEB_URL ?? 'http://127.0.0.1:3000';
 const chromePath =
@@ -77,6 +78,7 @@ await assertCp2Runtime();
 const browser = await chromium.launch({
   executablePath: chromePath,
   headless: true,
+  args: webUrl.startsWith('https:') ? ['--ignore-certificate-errors'] : [],
 });
 const summary = {
   status: 'PASS',
@@ -310,6 +312,15 @@ try {
   assert.equal(Number(afterReload?.maneuverIndex), 0);
   assert.equal(afterReload?.walkStatus, 'ACQUIRING');
   summary.refresh_resets_progress = true;
+
+  // FR-009/FR-014: signed expiry on server clock, using injected CP2 secret.
+  // Run last: refusal must not revive stale navigation or replace its owner.
+  summary.session_expiry = await assertActiveSessionExpiry(
+    page,
+    ctx,
+    browser,
+    activeJourney.journey_id,
+  );
 
   const storageKeys = await page.evaluate(() =>
     Object.keys({ ...localStorage }),

@@ -3,12 +3,14 @@ import { describe, it } from 'node:test';
 
 import {
   OFF_ROUTE_HISTORY,
-  distanceToPathMeters,
+  initialWalkProgress,
   isOffRoute,
   modeNavLabel,
   navigationMode,
   nextGuidance,
   pathPoints,
+  prepareWalkNavigation,
+  updateWalkProgress,
 } from './navigation.ts';
 
 function segWalk(overrides = {}) {
@@ -117,27 +119,87 @@ describe('F-04 navigation', () => {
     assert.ok(/skematik/i.test(guidance.detail));
   });
 
-  it('walking distance decreases when simulated position advances', () => {
-    const segment = segWalk();
-    const path = pathPoints(segment);
-    const first = distanceToPathMeters(
-      { latitude: -6.2, longitude: 106.81 },
-      path,
-    );
-    const last = distanceToPathMeters(
-      { latitude: -6.2, longitude: 106.83 },
-      path,
-    );
-    assert.ok(path);
-    assert.ok(first !== null && last !== null);
-    const ahead = { latitude: -6.2, longitude: 106.815 };
-    const behind = nextGuidance(
-      [segment],
-      0,
-      { boarded: false, alighted: false },
-      ahead,
-    );
-    assert.ok(behind?.detail);
+  it('walking distances decrease with fresh SIMULATED fixes in TRACKING state', () => {
+    const segment = segWalk({
+      geometry: {
+        type: 'LineString',
+        coordinates: [
+          [106.81, -6.2],
+          [106.811, -6.2],
+          [106.812, -6.2],
+        ],
+      },
+      walking_steps: [
+        {
+          latitude: -6.2,
+          longitude: 106.81,
+          distance_meters: 110.5,
+          relative_direction: 'DEPART',
+          absolute_direction: null,
+          street_name: null,
+          bogus_name: false,
+          area: false,
+          stay_on: false,
+        },
+        {
+          latitude: -6.2,
+          longitude: 106.811,
+          distance_meters: 110.5,
+          relative_direction: 'RIGHT',
+          absolute_direction: null,
+          street_name: null,
+          bogus_name: false,
+          area: false,
+          stay_on: false,
+        },
+      ],
+    });
+    const navigation = prepareWalkNavigation(segment);
+    assert.equal(navigation?.evidence, 'OTP_DERIVED_MANEUVER');
+    const boarding = { boarded: false, alighted: false };
+    let progress = initialWalkProgress();
+    let previous = null;
+    for (const [index, longitude] of [
+      106.81, 106.8101, 106.8102, 106.8103,
+    ].entries()) {
+      const timestamp = 1000 + index * 10_000;
+      const before = progress;
+      progress = updateWalkProgress(
+        navigation,
+        progress,
+        {
+          latitude: -6.2,
+          longitude,
+          accuracy: 5,
+          timestamp,
+        },
+        timestamp,
+      );
+      if (index === 0) {
+        assert.equal(progress.status, 'ACQUIRING');
+        continue;
+      }
+      assert.equal(progress.status, 'TRACKING');
+      assert.ok(progress.alongMeters > before.alongMeters);
+      assert.equal(progress.maneuverIndex, 0);
+      const guidance = nextGuidance([segment], 0, boarding, progress);
+      assert.equal(guidance.progressStatus, 'TRACKING');
+      assert.equal(guidance.mode, 'WALK_TO_DESTINATION');
+      assert.equal(
+        guidance.remainingMeters,
+        navigation.path.length - progress.alongMeters,
+      );
+      assert.equal(
+        guidance.nextDistanceMeters,
+        navigation.maneuvers[1].alongMeters - progress.alongMeters,
+      );
+      if (previous) {
+        assert.ok(guidance.remainingMeters < previous.remainingMeters);
+        assert.ok(guidance.nextDistanceMeters < previous.nextDistanceMeters);
+      }
+      previous = guidance;
+    }
+    assert.deepEqual(boarding, { boarded: false, alighted: false });
   });
 
   it('one noisy sample never reports off-route; sustained does', () => {

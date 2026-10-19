@@ -18,21 +18,34 @@ export function PlaceSearch({ label, snapshotId, value, onSelect }: Props) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const [status, setStatus] = useState('');
+  const [mounted, setMounted] = useState(false);
+  const ready = mounted && !!snapshotId;
 
   useEffect(() => {
-    if (!open || !snapshotId || query.trim().length < 2) {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!open || !ready || query.trim().length < 2) {
       setMatches([]);
       return;
     }
+    setMatches([]);
+    setActiveIndex(0);
+    setStatus('Searching places…');
     const controller = new AbortController();
     const timer = setTimeout(() => {
-      setStatus('Searching stops and stations…');
       void passengerApi
         .places(query.trim(), snapshotId, controller.signal)
         .then((results) => {
+          if (controller.signal.aborted) return;
           setMatches(results);
           setActiveIndex(0);
-          setStatus(results.length ? '' : 'No matching stop or station.');
+          setStatus(
+            results.length
+              ? `${results.length} places found.`
+              : 'No matching place.',
+          );
         })
         .catch((cause: unknown) => {
           if (!controller.signal.aborted) setStatus(errorMessage(cause));
@@ -42,7 +55,15 @@ export function PlaceSearch({ label, snapshotId, value, onSelect }: Props) {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [open, query, snapshotId]);
+  }, [open, query, ready, snapshotId]);
+
+  useEffect(() => {
+    if (!value) return;
+    setQuery(value.name);
+    setMatches([]);
+    setOpen(false);
+    setStatus('');
+  }, [value]);
 
   function select(place: TransitPlace) {
     setQuery(place.name);
@@ -58,15 +79,18 @@ export function PlaceSearch({ label, snapshotId, value, onSelect }: Props) {
         id={`${id}-input`}
         role="combobox"
         aria-autocomplete="list"
-        aria-expanded={open && matches.length > 0}
-        aria-controls={`${id}-options`}
+        aria-expanded={open}
+        aria-controls={open && matches.length > 0 ? `${id}-options` : undefined}
+        aria-describedby={`${id}-hint`}
         aria-activedescendant={
           open && matches[activeIndex]
             ? `${id}-option-${activeIndex}`
             : undefined
         }
         autoComplete="off"
-        placeholder="Search a stop or station"
+        disabled={!ready}
+        placeholder="Search stop, station, address or POI"
+        maxLength={80}
         value={query}
         onChange={(event) => {
           setQuery(event.target.value);
@@ -94,9 +118,24 @@ export function PlaceSearch({ label, snapshotId, value, onSelect }: Props) {
           }
         }}
       />
+      <p id={`${id}-hint`} className="place-search-hint">
+        Stops/stations plus sparse historical OSM addresses and POIs. Not
+        comprehensive or independently verified; use map pin for missing
+        locations.{' '}
+        <a href="https://www.openstreetmap.org/copyright">
+          © OpenStreetMap contributors
+        </a>
+        .
+      </p>
+      {!ready && (
+        <p className="place-status" role="status" aria-busy="true">
+          Stop and station search is loading…
+        </p>
+      )}
       {value && (
         <p className="place-confirmation">
-          {modeName(value.product_mode)} · {value.kind.toLowerCase()} selected
+          {value.product_mode ? `${modeName(value.product_mode)} · ` : ''}
+          {value.kind.toLowerCase()} selected
         </p>
       )}
       {open && matches.length > 0 && (
@@ -113,8 +152,11 @@ export function PlaceSearch({ label, snapshotId, value, onSelect }: Props) {
             >
               <strong>{place.name}</strong>
               <small>
-                {modeName(place.product_mode)} · {place.kind.toLowerCase()} ·{' '}
-                {place.external_id}
+                {place.product_mode ? `${modeName(place.product_mode)} · ` : ''}
+                {place.kind.toLowerCase()} · {place.external_id}
+                {place.kind === 'ADDRESS' || place.kind === 'POI'
+                  ? ' · OSM · bounded coverage'
+                  : ''}
               </small>
             </li>
           ))}

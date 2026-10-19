@@ -42,7 +42,7 @@ Canonical error codes are `VALIDATION_ERROR`, `DATA_COVERAGE_LIMITATION`, `NO_FE
 | `GET /recoveries/{recoveryId}` | Read repair and before/after metrics |
 | `POST /operator-recovery/analyses` | Create route split-service analysis |
 | `GET /operator-recovery/analyses/{analysisId}` | Read services, gap, candidates, fleet estimate, assumptions, validation |
-| `POST /copilot/messages` | Execute bounded domain-tool interaction and grounded explanation |
+| `POST /copilot/messages` | Execute bounded passenger domain-tool interaction and grounded explanation |\n| `POST /copilot/research/messages` | Authenticated RESEARCHER_OPERATOR/ADMIN bounded research interaction; owner derives from principal |\n| `GET /copilot/research/sessions/{sessionId}` | Authenticated principal-owned research audit read; expired/foreign sessions return not found |
 | `GET /data-sources` | Cursor-list source verification/coverage status |
 | `GET /data-sources/{sourceId}/versions` | Cursor-list manifested source versions |
 | `POST /experiments/replays` | Create controlled replay using frozen snapshot/scenario/config |
@@ -57,6 +57,8 @@ Recovery also exposes original future prefix, invalidated span, repaired connect
 Roles are Passenger, Researcher/Operator, and Admin. Journey read/use operations are scoped to their owner; scenario mutation, simulation execution, operator analyses, experiment actions, and administrative ingestion require role authorization. Authentication provider, token/cookie transport, and registration policy are DEFERRED. Authorization remains server-side.
 
 The operator incident-console domain path remains internal and captures actor/operator identity, affected entities/modes, incident type/state, reason, start, expiry, and source lineage. Phase 3 protects disruption/scenario mutations with a deny-by-default bearer token supplied through `INTERNAL_RESEARCH_TOKEN`; this temporary research boundary is not a replacement for the deferred identity provider and role authorization. Server-to-client operational summaries use SSE; WebSocket still requires a separately justified bidirectional need.
+
+FR-010 Copilot research contexts use `scenario:<uuid>` and `impact:<simulation-run-uuid>`. These read-only tools require server-resolved `RESEARCHER_OPERATOR` or `ADMIN`; caller-supplied role headers never authorize access. Scenario definitions and simulation impact outputs remain `SIMULATED`; they never imply live network state.
 
 ## Async and compatibility
 

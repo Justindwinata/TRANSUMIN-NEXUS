@@ -25,10 +25,27 @@ const specs = [
   'src/spatial/spatial.integration.spec.ts',
   'src/mobility-twin/mobility-twin.integration.spec.ts',
   'src/disruption/disruption.integration.spec.ts',
+  'src/research/research.integration.spec.ts',
   'src/disruption/hazard-incident.integration.spec.ts',
   'src/journey/journey.integration.spec.ts',
   'src/journey/journey-x1b.integration.spec.ts',
+  'src/copilot/copilot.integration.spec.ts',
+  'src/auth/auth.integration.spec.ts',
+  'src/operator-recovery/operator-recovery.integration.spec.ts',
 ] as const;
+// Exact registered path only; targeted runs retain every scratch ownership/cleanup guard.
+const requestedSpec = process.argv[2];
+assert(
+  process.argv.length <= 3,
+  'Usage: integration-suite.cli.ts [registered-spec-path]',
+);
+assert(
+  !requestedSpec || specs.some((spec) => spec === requestedSpec),
+  'Unknown integration spec',
+);
+const selectedSpecs = specs.filter(
+  (spec) => !requestedSpec || spec === requestedSpec,
+);
 const source = process.env.POSTGRES_DB ?? 'transum_in_nexus_product';
 const user = process.env.POSTGRES_USER;
 const password = process.env.POSTGRES_PASSWORD;
@@ -185,7 +202,7 @@ async function main(): Promise<void> {
     );
     assert.equal(sourceIdentity.rows[0]?.owner, user);
 
-    for (const spec of specs) {
+    for (const spec of selectedSpecs) {
       const id = randomUUID();
       const database = `tnx_integration_${id.replaceAll('-', '')}`;
       const marker = `tnx_integration:${id}`;
@@ -292,12 +309,12 @@ async function main(): Promise<void> {
     );
   } finally {
     await admin.end();
-    if (completed !== specs.length) {
+    if (completed !== selectedSpecs.length) {
       console.error(
         JSON.stringify({
           status: 'FAIL',
           completed,
-          total: specs.length,
+          total: selectedSpecs.length,
           passed,
         }),
       );

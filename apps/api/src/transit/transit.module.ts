@@ -10,6 +10,7 @@ import { KyselyDataSourceRepository } from './infrastructure/kysely-data-source.
 import { DataSourcesController } from './interface/data-sources.controller.js';
 import { TransitPlaceSearchService } from './application/transit-place-search.service.js';
 import { TransitPlacesController } from './interface/transit-places.controller.js';
+import { LocalPlaceIndexAdapter } from './infrastructure/local-place-index.adapter.js';
 
 @Module({
   imports: [DatabaseModule],
@@ -20,6 +21,12 @@ import { TransitPlacesController } from './interface/transit-places.controller.j
       provide: DATA_SOURCE_REPOSITORY,
       useExisting: KyselyDataSourceRepository,
     },
+    ListDataSourcesUseCase,
+    ListDatasetVersionsUseCase,
+    TransitPlaceSearchService,
+    LocalPlaceIndexAdapter,
+  ],
+  exports: [
     ListDataSourcesUseCase,
     ListDatasetVersionsUseCase,
     TransitPlaceSearchService,

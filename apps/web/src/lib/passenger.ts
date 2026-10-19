@@ -6,6 +6,42 @@ export type JourneyAlert = components['schemas']['JourneyAlert'];
 export type RecoveryAcceptance = components['schemas']['RecoveryAcceptance'];
 export type Recovery = components['schemas']['Recovery'];
 export type TransitPlace = components['schemas']['TransitPlace'];
+
+export function recoveryComparisonSource(
+  active: Journey | null,
+  recovery: Recovery | null,
+  captured: { recoveryId: string; journey: Journey } | null,
+): Journey | null {
+  if (
+    !active ||
+    !recovery ||
+    active.journey_id !== recovery.original_journey_id
+  )
+    return null;
+  if (
+    captured?.recoveryId === recovery.recovery_id &&
+    captured.journey.journey_id === recovery.original_journey_id
+  )
+    return captured.journey;
+  // Accepted refresh has no proposal-source lineage, especially after R2+.
+  if (
+    recovery.accepted ||
+    active.accepted_recovery_id === recovery.recovery_id ||
+    active.progress?.revision !== recovery.progress_revision
+  )
+    return null;
+  return active;
+}
+
+export function canReplayPendingReport(
+  pendingKey: string | null,
+  localAttemptKey: string | null,
+  targetAvailable: boolean,
+): boolean {
+  return (
+    pendingKey !== null && pendingKey === localAttemptKey && targetAvailable
+  );
+}
 export type PassengerReport = Readonly<{
   report_id: string;
   active_journey_id: string | null;

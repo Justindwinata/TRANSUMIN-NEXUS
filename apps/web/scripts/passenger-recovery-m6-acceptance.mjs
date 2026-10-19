@@ -5,6 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 import { chromium } from 'playwright-core';
 
+import { assertCp2Runtime } from './cp2-runtime-guard.mjs';
+
+// Fail closed: this suite mutates journeys/reports and must never target the
+// shared product runtime. Run via `pnpm data:browser:isolated --suite=M6`.
+await assertCp2Runtime();
+
 const web = process.env.M6_WEB_URL ?? 'http://127.0.0.1:3000';
 const api = process.env.M6_API_URL ?? 'http://127.0.0.1:3001/api/v1';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -202,8 +208,8 @@ try {
   assert.ok(serviceToken.length >= 32, 'PASSENGER_SERVICE_TOKEN unavailable');
   browser = await chromium.launch(
     existsSync(chrome)
-      ? { executablePath: chrome, headless: true }
-      : { headless: true },
+      ? { executablePath: chrome, headless: true, args: String(web).startsWith("https:") || String(api).startsWith("https:") ? ["--ignore-certificate-errors"] : [] }
+      : { headless: true, args: String(web).startsWith("https:") || String(api).startsWith("https:") ? ["--ignore-certificate-errors"] : [] },
   );
   context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   page = await context.newPage();
@@ -498,8 +504,7 @@ console.log(
   JSON.stringify({
     status,
     cases,
-    evidence:
-      'real Playwright UI + real OTP/API/product DB; controlled report evidence SIMULATED; no SQL cleanup',
+    evidence: `real Playwright UI + real OTP/API against scratch-isolated runtime (${web} / ${api}); controlled report evidence SIMULATED; no SQL cleanup`,
   }),
 );
 process.exitCode = status === 'PASS' ? 0 : 1;

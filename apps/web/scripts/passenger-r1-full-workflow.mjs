@@ -6,6 +6,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 
+import { assertCp2Runtime } from './cp2-runtime-guard.mjs';
+
+// Fail closed: this suite mutates journeys/reports and must never target the
+// shared product runtime. Run via `pnpm data:browser:isolated --suite=V20`.
+await assertCp2Runtime();
+
 const web = process.env.M7_WEB_URL ?? 'http://127.0.0.1:3000';
 const api = process.env.M7_API_URL ?? 'http://127.0.0.1:3001/api/v1';
 const chrome =
@@ -166,16 +172,19 @@ function ok(result, statuses = [200, 201]) {
 }
 async function controlled(action, payload) {
   return jsonResponse(
-    await fetch(`${api}/controlled/passenger-reports/${reportId}/${action}`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${token}`,
-        'x-controlled-reviewer': reviewer,
-        'content-type': 'application/json',
+    await fetch(
+      `${process.env.CONTROLLED_REVIEW_API_URL ?? api}/controlled/passenger-reports/${reportId}/${action}`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'x-controlled-reviewer': reviewer,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(120_000),
       },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(120_000),
-    }),
+    ),
   );
 }
 async function uiMutation(button, suffix, method) {
@@ -374,7 +383,10 @@ async function mapChecks() {
     .filter({ hasText: 'Interactive route map ready.' })
     .waitFor({ timeout: 30_000 });
   await page.locator('.maplibregl-canvas').first().waitFor({ timeout: 15_000 });
-  await page.getByText('© OpenStreetMap contributors').waitFor();
+  await page
+    .getByRole('figure', { name: 'Interactive route geometry:' })
+    .getByRole('link', { name: '© OpenStreetMap contributors' })
+    .waitFor();
   await page.waitForFunction(
     () => document.querySelectorAll('.maplibre-marker').length >= 2,
     null,
@@ -403,16 +415,20 @@ try {
     assert.ok((await fetch(web, { signal: AbortSignal.timeout(20_000) })).ok);
     assert.ok(
       (
-        await fetch('http://127.0.0.1:3001/health/ready', {
+        await fetch(`${new URL(api).origin}/health/ready`, {
           signal: AbortSignal.timeout(20_000),
         })
       ).ok,
     );
-    return 'runtime ready on 3000/3001';
+    return `runtime ready on ${web}/${new URL(api).origin}`;
   });
   browser = await chromium.launch(
     existsSync(chrome)
-      ? { executablePath: chrome, headless: true }
+      ? {
+          executablePath: chrome,
+          headless: true,
+          args: web.startsWith('https:') ? ['--ignore-certificate-errors'] : [],
+        }
       : { headless: true },
   );
   context = await browser.newContext({ viewport: { width: 390, height: 844 } });

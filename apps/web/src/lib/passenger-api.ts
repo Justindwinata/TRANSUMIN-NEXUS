@@ -9,42 +9,133 @@ import type {
 
 type Envelope<T> = { data: T; meta?: unknown };
 
+export async function reportAttemptHash(input: object): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(input));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 export class PassengerApiError extends Error {
   readonly code: string;
   readonly status: number;
-  constructor(code: string, message: string, status: number) {
+  readonly retryAfterSeconds: number | null;
+  constructor(
+    code: string,
+    message: string,
+    status: number,
+    retryAfterSeconds: number | null = null,
+  ) {
     super(message);
     this.code = code;
     this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api/passenger/${path}`, {
-    ...options,
-    cache: 'no-store',
-    headers: {
-      accept: 'application/json',
-      ...(options.body ? { 'content-type': 'application/json' } : {}),
-      ...options.headers,
-    },
-  });
-  const body: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    const error = (
-      body as { error?: { code?: string; message?: string } } | null
-    )?.error;
-    throw new PassengerApiError(
-      error?.code ?? 'REQUEST_FAILED',
-      error?.message ?? 'The service could not complete this request.',
-      response.status,
-    );
+  const method = options.method ?? 'GET';
+  const mutation = method !== 'GET';
+  const controller = new AbortController();
+  const external = options.signal;
+  const cancel = () => controller.abort(external?.reason);
+  if (external?.aborted) cancel();
+  else external?.addEventListener('abort', cancel, { once: true });
+  // ponytail: proxy deadlines are 30s/120s; no automatic mutation retry.
+  // Timeout cannot prove whether a write committed. Reconcile stored state.
+  const timer = setTimeout(
+    () =>
+      controller.abort(new DOMException('Request timed out.', 'TimeoutError')),
+    path === 'recoveries' && method === 'POST' ? 125_000 : 35_000,
+  );
+  try {
+    const response = await fetch(`/api/passenger/${path}`, {
+      ...options,
+      signal: controller.signal,
+      cache: 'no-store',
+      headers: {
+        accept: 'application/json',
+        ...(options.body ? { 'content-type': 'application/json' } : {}),
+        ...options.headers,
+      },
+    });
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (cause) {
+      controller.signal.throwIfAborted();
+      if (!(cause instanceof SyntaxError)) throw cause;
+      if (response.ok)
+        throw new PassengerApiError(
+          'INVALID_RESPONSE',
+          'Server returned an invalid response. Reload status before retrying.',
+          502,
+        );
+      body = null;
+    }
+    if (!response.ok) {
+      const error = (
+        body as { error?: { code?: string; message?: string } } | null
+      )?.error;
+      const rawRetry = response.headers.get('retry-after');
+      const retryAfterSeconds =
+        rawRetry !== null && /^(0|[1-9][0-9]*)$/.test(rawRetry)
+          ? Math.min(parseInt(rawRetry, 10), 65535)
+          : null;
+      throw new PassengerApiError(
+        error?.code ?? 'REQUEST_FAILED',
+        error?.message ?? 'The service could not complete this request.',
+        response.status,
+        retryAfterSeconds,
+      );
+    }
+    if (
+      body === null ||
+      typeof body !== 'object' ||
+      !('data' in (body as Record<string, unknown>))
+    ) {
+      throw new PassengerApiError(
+        'INVALID_RESPONSE',
+        'Server response missing expected data. Reload status before retrying.',
+        502,
+      );
+    }
+    return (body as Envelope<T>).data;
+  } catch (cause) {
+    if (controller.signal.reason?.name === 'TimeoutError') {
+      throw new PassengerApiError(
+        'REQUEST_TIMEOUT',
+        'Request timed out. Outcome is unknown. Reload status before retrying.',
+        408,
+      );
+    }
+    if (cause instanceof TypeError && !controller.signal.aborted) {
+      throw new PassengerApiError(
+        'NETWORK_ERROR',
+        mutation
+          ? 'Connection interrupted. Outcome is unknown. Reload status before retrying.'
+          : 'Connection interrupted. Check your connection and retry.',
+        0,
+      );
+    }
+    throw cause;
+  } finally {
+    clearTimeout(timer);
+    external?.removeEventListener('abort', cancel);
   }
-  return (body as Envelope<T>).data;
 }
 
 export const passengerApi = {
   config: () => request<{ network_snapshot_id: string }>('config'),
+  planningHealth: () =>
+    request<{
+      status: 'AVAILABLE' | 'UNAVAILABLE';
+      provider: 'OTP';
+      version: string;
+      checked_at: string;
+      latency_milliseconds: number;
+    }>('journeys/planning-health'),
   places: (query: string, snapshotId: string, signal?: AbortSignal) =>
     request<TransitPlace[]>(
       `transit/places?q=${encodeURIComponent(query)}&snapshot_id=${encodeURIComponent(snapshotId)}`,
@@ -252,6 +343,10 @@ export const passengerApi = {
     request<PassengerReport[]>(
       `passenger-reports?active_journey_id=${encodeURIComponent(journeyId)}`,
     ),
+  lookupReport: (idempotencyKey: string) =>
+    request<PassengerReport | null>(
+      `passenger-reports?idempotency_key=${encodeURIComponent(idempotencyKey)}`,
+    ),
   getReport: (id: string) =>
     request<PassengerReport>(`passenger-reports/${id}`),
 };
@@ -315,8 +410,27 @@ export function recoveryProposalKey(input: {
   impactId: string;
   revision: number;
   acceptedRecoveryId: string | null;
+  attemptNonce?: number | null;
 }): string {
-  return `passenger:${input.journeyId}:${input.impactId}:${input.revision}:${input.acceptedRecoveryId ?? 'G0'}`;
+  const base = `passenger:${input.journeyId}:${input.impactId}:${input.revision}:${input.acceptedRecoveryId ?? 'G0'}`;
+  return input.attemptNonce == null || input.attemptNonce === 0
+    ? base
+    : `${base}:attempt-${input.attemptNonce}`;
+}
+
+export type RecoveryAttempt = { nonce: number; known: boolean };
+
+// Fresh computation is opt-in and only follows a known outcome. Unknown writes
+// (including proxy 5xx, aborts and invalid responses) must replay identical input.
+export function nextRecoveryAttempt(
+  prior: RecoveryAttempt | null,
+  fresh: boolean,
+): RecoveryAttempt {
+  if (fresh && !prior?.known)
+    throw new Error(
+      'Hasil recovery belum pasti. Coba lagi dengan identitas yang sama.',
+    );
+  return { nonce: (prior?.nonce ?? 0) + (fresh ? 1 : 0), known: false };
 }
 
 // After an uncertain acceptance POST, reconcile from an authoritative journey

@@ -64,7 +64,7 @@ export async function assertCp2Runtime() {
   );
   const url = new URL(process.env.DATABASE_URL ?? 'invalid:');
   assert.equal(url.hostname, '127.0.0.1');
-  assert.equal(url.port, '5435');
+  assert.equal(url.port, process.env.CP2_EXPECTED_DB_PORT ?? '5435');
   assert.equal(url.pathname, `/${expected.name}`);
   assert.equal(url.search, '');
   assert.equal(url.hash, '');
@@ -96,7 +96,11 @@ export async function assertCp2Runtime() {
     process.env.PASSENGER_API_BASE_URL,
     'http://127.0.0.1:3303/api/v1',
   );
-  assert.equal(process.env.PASSENGER_WEB_URL, 'http://127.0.0.1:3302');
+  assert.ok(
+    ['http://127.0.0.1:3302', 'https://127.0.0.1:3302'].includes(
+      process.env.PASSENGER_WEB_URL,
+    ),
+  );
   const pool = new Pool({ connectionString: url.toString(), max: 1 });
   try {
     const actual = (

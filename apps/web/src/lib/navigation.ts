@@ -186,7 +186,7 @@ export function pathPoints(segment: SegmentLike | null): PathPoint[] | null {
     return null;
   const points: PathPoint[] = [];
   for (const coordinate of coordinates) {
-    if (coordinate.length !== 2) return null;
+    if (!Array.isArray(coordinate) || coordinate.length !== 2) return null;
     const [longitude, latitude] = coordinate;
     if (!validPoint({ latitude, longitude })) return null;
     const previous = points.at(-1);
@@ -387,7 +387,9 @@ export function prepareWalkNavigation(
   let expected = 0;
   for (const [index, step] of steps.entries()) {
     if (
+      !step ||
       !validPoint({ latitude: step.latitude, longitude: step.longitude }) ||
+      (step.street_name !== null && typeof step.street_name !== 'string') ||
       !Number.isFinite(step.distance_meters) ||
       step.distance_meters < 0 ||
       !step.relative_direction ||

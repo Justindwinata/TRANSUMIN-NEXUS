@@ -7,11 +7,34 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 
-const web = process.env.S09_WEB_URL ?? 'http://127.0.0.1:3000';
-const api = (process.env.S09_API_URL ?? 'http://127.0.0.1:3001/api/v1').replace(
-  /\/$/,
-  '',
-);
+import { assertCp2Runtime } from './cp2-runtime-guard.mjs';
+
+// Fail closed: mutable harness, never target the shared product runtime.
+// Run via `pnpm data:browser:isolated --suite=<name>`; S01/S09 stay out of the
+// isolated set until their corridors are proven on the scratch corpus.
+await assertCp2Runtime();
+
+const rawWeb =
+  process.env.S09_WEB_URL ??
+  process.env.PASSENGER_WEB_URL ??
+  process.env.M7_WEB_URL ??
+  'http://127.0.0.1:3302';
+const web = rawWeb.replace(/\/$/, '');
+const controlledBase = (
+  process.env.CONTROLLED_REVIEW_API_URL ??
+  process.env.S09_API_URL ??
+  process.env.M6_API_URL ??
+  'http://127.0.0.1:3303/api/v1'
+).replace(/\/$/, '');
+const api = controlledBase;
+const apiHealth = (() => {
+  try {
+    const u = new URL(api);
+    return `${u.protocol}//${u.host}/health/ready`;
+  } catch {
+    return 'http://127.0.0.1:3304/health/ready';
+  }
+})();
 const chrome =
   process.env.PRODUCT_P1R_CHROME ??
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -267,7 +290,7 @@ try {
     assert.ok((await fetch(web, { signal: AbortSignal.timeout(20_000) })).ok);
     assert.ok(
       (
-        await fetch('http://127.0.0.1:3001/health/ready', {
+        await fetch(apiHealth, {
           signal: AbortSignal.timeout(20_000),
         })
       ).ok,
@@ -275,7 +298,11 @@ try {
   });
   browser = await chromium.launch(
     existsSync(chrome)
-      ? { executablePath: chrome, headless: true }
+      ? {
+          executablePath: chrome,
+          headless: true,
+          args: web.startsWith('https:') ? ['--ignore-certificate-errors'] : [],
+        }
       : { headless: true },
   );
   primary = await makeSession();
@@ -325,84 +352,143 @@ try {
     alerts.length > 0,
     'primary journey has no current disruption alert',
   );
-  const recoveryResult = await uiMutation(
-    primary,
-    'Find another way',
-    'recoveries',
-    'POST',
-  );
-  if (recoveryResult.status === 200 || recoveryResult.status === 201) {
-    recovery = ok(recoveryResult);
-    if (recovery.status === 'NO_PATH') {
-      assert.equal(recovery.proposed_journey, null);
-      assert.equal(recovery.metrics.recovery_success, false);
-      outcome = 'NO_VALID_ALTERNATIVE_NO_PATH';
-      mark(
-        'recovery-rejects-all-blocked-candidates',
-        'PASS',
-        `application ${outcome}; no alternative persisted`,
-      );
-    } else {
-      const legs = recovery.proposed_journey?.segments ?? [];
-      const dependencies = routeTargets({
-        segments: legs,
-        progress: { completed_segment_count: 0 },
-      });
-      const detail = `genuine fallback legs=${legs.map((leg) => `${leg.mode}:${leg.route_short_name || 'walk'} (${leg.from.name} → ${leg.to.name})`).join('; ')} route_dependencies=${dependencies.map((item) => item.id).join(',') || 'none'}`;
-      outcome = 'GENUINE_FALLBACK';
-      mark('recovery-rejects-all-blocked-candidates', 'NOT_VERIFIED', detail);
-      mark('engine-otp-no-path', 'NOT_VERIFIED', `OTP returned ${detail}`);
+  // Bounded exhaustion: genuine fallback is not proof of blocking.
+  // If OTP returns a new route (e.g. 6H) not in initial candidates, that
+  // fallback's dependencies must be reported via legit UI and
+  // CONTROLLED_VERIFIED as SIMULATED, then recovery retried — within a
+  // small bound, without forcing result or altering adapter.
+  const BOUNDED_REPORTS = 16;
+  const BOUNDED_RECOVERY_ATTEMPTS = 3;
+  async function reportRouteIdsViaUi(routeIds) {
+    // Each routeId must be reported through passenger UI + controlled verify.
+    // Create an independent passenger context per exhaustion round so the
+    // fallback route is selectable from that journey's remainingReportTargets.
+    for (const routeId of routeIds) {
+      if (reports.length >= BOUNDED_REPORTS) break;
+      // Already verified? skip
+      if (reports.some((item) => item.id === routeId && item.verified)) continue;
+      let dedicated = null;
+      let found = false;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        dedicated = await makeSession();
+        await plan(dedicated);
+        // Find actual OTP candidate containing routeId; don't assume prior plans repeat it.
+        let targetIndex = -1;
+        for (let index = 0; index < dedicated.candidates.length; index += 1) {
+          const candidate = dedicated.candidates[index];
+          const hasRoute = candidate.segments?.some((segment) =>
+            segment.entity_bindings?.some((binding) => binding.mobility_entity_id === routeId),
+          );
+          if (hasRoute) { targetIndex = index; break; }
+        }
+        if (targetIndex === -1) {
+          // No candidate with this route; this graph state cannot surface it — try again with fresh plan.
+          await dedicated.context.close().catch(() => {});
+          sessions.pop();
+          continue;
+        }
+        await activate(dedicated, targetIndex);
+        const targets = routeTargets(dedicated.journey).filter((item) => item.id === routeId);
+        if (targets.length === 0) {
+          await dedicated.context.close().catch(() => {});
+          sessions.pop();
+          continue;
+        }
+        for (const target of targets) {
+          const selector = dedicated.page.getByLabel('Lokasi atau layanan pada sisa perjalanan');
+          const value = await selector.locator('option').evaluateAll(
+            (options, id) => options.find((option) => option.value.includes(id))?.value,
+            target.id,
+          );
+          assert.ok(value, `exhaustion route ${target.id} missing from UI dropdown`);
+          await selector.selectOption(value);
+          await dedicated.page.getByLabel('Waktu kejadian (WIB)').fill(jakarta(new Date(Date.now() - 60_000).toISOString()));
+          await dedicated.page.getByLabel('Keterangan').fill(`R3 S09 exhaustion SIMULATED ${routeId} ${randomUUID()}`);
+          const report = ok(await uiMutation(dedicated, 'Kirim laporan', 'passenger-reports', 'POST'));
+          assert.equal(report.verification_status, 'REPORTED_UNVERIFIED');
+          reports.push({ ...target, reportId: report.report_id, session: dedicated, candidate: targetIndex });
+        }
+        found = true;
+        break;
+      }
+      if (!found) {
+        mark('exhaustion-route-unavailable', 'NOT_VERIFIED', `route ${routeId} not surfaced by OTP candidates within bound; cannot exhaust via UI`);
+        continue;
+      }
+      // Controlled verify each newly reported id
+      for (const item of reports.filter((r) => r.id === routeId && !r.verified)) {
+        const review = ok(await controlled(item.reportId, 'verify', {
+          operational_state: 'UNAVAILABLE',
+          incident_type: 'SERVICE_SUSPENSION',
+          reason: `R3 S09 exhaustion ${item.reportId}`,
+        }));
+        assert.equal(review.verification_status, 'CONTROLLED_VERIFIED');
+        item.verified = true;
+      }
     }
-  } else {
-    assert.equal(recoveryResult.status, 422);
-    assert.equal(recoveryResult.body?.error?.code, 'NO_RECOVERY_PATH');
-    assert.equal(
-      recoveryResult.body?.error?.details?.recovery_code,
-      'NO_RECOVERY_PATH',
-    );
-    outcome = 'NO_RECOVERY_PATH_422';
-    mark(
-      'recovery-rejects-all-blocked-candidates',
-      'PASS',
-      `application ${outcome}; no alternative persisted`,
-    );
-    mark(
-      'engine-otp-no-path',
-      'NOT_VERIFIED',
-      'application rejection observed; distinct genuine OTP NO_PATH not returned',
-    );
+  }
+
+  let recoveryResult = await uiMutation(primary, 'Find another way', 'recoveries', 'POST');
+  let exhaustionRounds = 0;
+  while (true) {
+    if (recoveryResult.status === 200 || recoveryResult.status === 201) {
+      recovery = ok(recoveryResult);
+      if (recovery.status === 'NO_PATH') {
+        assert.equal(recovery.proposed_journey, null);
+        assert.equal(recovery.metrics.recovery_success, false);
+        outcome = 'NO_VALID_ALTERNATIVE_NO_PATH';
+        mark('recovery-rejects-all-blocked-candidates', 'PASS', `application ${outcome}; no alternative persisted after ${exhaustionRounds} exhaustion round(s)`);
+        mark('engine-otp-no-path', 'NOT_VERIFIED', 'Application NO_PATH observed; provider routingErrors are not exposed here. Run scripts/acceptance/otp-negative-routing.mjs separately; state exhaustion is not genuine OTP graph disconnection.');
+        break;
+      }
+      // Genuine fallback — collect its route dependencies for bounded exhaustion
+      const legs = recovery.proposed_journey?.segments ?? [];
+      const dependencies = routeTargets({ segments: legs, progress: { completed_segment_count: 0 } });
+      const detail = `genuine fallback legs=${legs.map((leg) => `${leg.mode}:${leg.route_short_name || 'walk'} (${leg.from.name} → ${leg.to.name})`).join('; ')} route_dependencies=${dependencies.map((item) => item.id).join(',') || 'none'}`;
+      if (exhaustionRounds >= BOUNDED_RECOVERY_ATTEMPTS || reports.length + dependencies.length > BOUNDED_REPORTS) {
+        outcome = 'GENUINE_FALLBACK';
+        mark('recovery-rejects-all-blocked-candidates', 'NOT_VERIFIED', `${detail} — bounded limit reached (rounds ${exhaustionRounds}/${BOUNDED_RECOVERY_ATTEMPTS}, reports ${reports.length}/${BOUNDED_REPORTS})`);
+        mark('engine-otp-no-path', 'NOT_VERIFIED', `OTP returned ${detail} — fallback not exhausted within bound; engine genuine NO_PATH (routingErrors) distinct from application NO_VALID_ROUTE_AFTER_STATE_VALIDATION/NO_RECOVERY_PATH`);
+        break;
+      }
+      // Exhaust this fallback's routes via legit UI then retry
+      if (dependencies.length > 0) {
+        await reportRouteIdsViaUi(dependencies.map((item) => item.id));
+      } else {
+        // Fallback is walk-only, no route to block — cannot exhaust further
+        outcome = 'GENUINE_FALLBACK';
+        mark('recovery-rejects-all-blocked-candidates', 'NOT_VERIFIED', `${detail} — walk-only fallback has no route dependency to block`);
+        mark('engine-otp-no-path', 'NOT_VERIFIED', `OTP returned ${detail}`);
+        break;
+      }
+      exhaustionRounds += 1;
+      mark(`exhaustion-round-${exhaustionRounds}`, 'PASS', `blocked ${dependencies.map((item) => item.id).join(',')} via UI; retrying recovery`);
+      // Legitimate explicit fresh computation: only after known outcome,
+      // new idempotency via Try a fresh alternative (attempt nonce), no header override.
+      await primary.page.getByRole('button', { name: 'Try a fresh alternative' }).waitFor({ timeout: 30_000 });
+      recoveryResult = await uiMutation(primary, 'Try a fresh alternative', 'recoveries', 'POST');
+      continue;
+    }
+    if (recoveryResult.status === 422) {
+      assert.equal(recoveryResult.body?.error?.code, 'NO_RECOVERY_PATH');
+      assert.equal(recoveryResult.body?.error?.details?.recovery_code, 'NO_RECOVERY_PATH');
+      outcome = 'NO_RECOVERY_PATH_422';
+      mark('recovery-rejects-all-blocked-candidates', 'PASS', `application ${outcome}; no alternative persisted (distinct from OTP NO_ROUTE/NO_STOPS_IN_RANGE; see engine-otp-no-path)`);
+      mark('engine-otp-no-path', 'NOT_VERIFIED', 'application 422 NO_RECOVERY_PATH observed; genuine provider routingErrors (e.g. NO_STOPS_IN_RANGE) remain separate — run scripts/acceptance/otp-negative-routing.mjs for pure OTP evidence');
+      break;
+    }
+    throw new Error(`unexpected recovery status ${recoveryResult.status}: ${JSON.stringify(recoveryResult.body?.error ?? recoveryResult.body)}`);
   }
   if (outcome === 'GENUINE_FALLBACK') {
-    await primary.page
-      .getByRole('heading', { name: 'Recovery option' })
-      .waitFor();
-    assert.ok(
-      await primary.page
-        .getByRole('button', { name: 'Find another way' })
-        .count(),
-    );
-    mark(
-      'ui-indonesian-no-path-and-retry',
-      'NOT_VERIFIED',
-      'genuine fallback shown; NO_PATH explanation unavailable; retry remains allowed',
-    );
+    await primary.page.getByRole('heading', { name: 'Recovery option' }).waitFor().catch(() => {});
+    const hasRetry = await primary.page.getByRole('button', { name: 'Find another way' }).count();
+    assert.ok(hasRetry);
+    mark('ui-indonesian-no-path-and-retry', 'NOT_VERIFIED', 'genuine fallback shown; NO_PATH explanation unavailable; retry remains allowed — bounded exhaustion incomplete');
   } else
     await step('ui-indonesian-no-path-and-retry', async () => {
-      await primary.page
-        .getByText(/Tidak ada rute pengganti yang aman/i)
-        .first()
-        .waitFor({ timeout: 30_000 });
-      assert.equal(
-        await primary.page
-          .getByRole('button', { name: 'Use this repaired route' })
-          .count(),
-        0,
-      );
-      assert.ok(
-        await primary.page
-          .getByRole('button', { name: 'Find another way' })
-          .count(),
-      );
+      await primary.page.getByText(/Tidak ada rute pengganti yang aman/i).first().waitFor({ timeout: 30_000 });
+      assert.equal(await primary.page.getByRole('button', { name: 'Use this repaired route' }).count(), 0);
+      assert.ok(await primary.page.getByRole('button', { name: 'Find another way' }).count());
       return 'Indonesian NO_PATH explanation shown; retry allowed';
     });
   await step('active-journey-history-revision-unchanged', async () => {

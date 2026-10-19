@@ -30,7 +30,7 @@ Each row contains the required conflict ID, old definition, canonical definition
 | CONFLICT-014 | Example transport sources are marked high-confidence | All source availability remains `NOT VERIFIED` until registry/license/checksum evidence exists | Avoids unsupported dataset claims | Data phase | DEFERRED |
 | CONFLICT-015 | Journey module builds its own transit graph/router | `RoutingPort` isolates a routing provider; no full router is built from scratch by default | Preserves scope and provider replaceability | Journey module | CLOSED |
 | CONFLICT-016 | Top-level `simulation/` application | Simulation is MOD-SIM plus research scenarios; no separate application | Preserves modular monolith | Repository layout | CLOSED |
-| CONFLICT-017 | JWT/register assumed | Roles and protected operations are frozen; provider/transport and registration are deferred | Authentication transport is not needed to scaffold modules | Auth implementation | DEFERRED |
+| CONFLICT-017 | JWT/register assumed | Superseded by explicit Product Owner FR-014 decision (2026-10-19): local credentials, scrypt, server-side revocable 12-hour sessions, HttpOnly SameSite Strict `tnx_session` cookie with Bearer fallback; bootstrap admin through controlled service/CLI, Admin-only create provisioning; no public registration | Local identity boundary authorized without external provider or JWT dependencies | Auth implementation | RESOLVED BY PO DECISION |
 | CONFLICT-018 | `api.transumin.com` is presented as active | OpenAPI declares no production server | Deployment does not exist | Deployment/docs | CLOSED |
 | CONFLICT-019 | FR-005 and FR-008 use incompatible simulation creation | Scenario definition and simulation run are separate resources | One lifecycle supports replay and async execution | API and DB | CLOSED |
 | CONFLICT-020 | `/simulations/{id}/impact` mixes scenario/run IDs | `/simulation-runs/{runId}/impact`; IDs are never interchangeable | Eliminates ambiguous lookup | API and traceability | CLOSED |
@@ -49,7 +49,7 @@ Each row contains the required conflict ID, old definition, canonical definition
 
 | Decision | Why deferred | Required before |
 |---|---|---|
-| Authentication provider/transport and self-registration | Roles/boundaries are sufficient for scaffolding | Auth implementation |
+| External authentication provider/transport and self-registration | Product Owner authorized local credential sessions; external provider remains unnecessary; no public registration | Future external identity requirement |
 | LLM provider/model/prompt version | Copilot is provider-neutral behind bounded tools | Copilot implementation/evaluation |
 | Routing engine/version | Contract is frozen behind `RoutingPort` | Routing integration |
 | Framework and dependency versions | Phase 0.3 owns toolchain selection | Phase 0.3 commit |

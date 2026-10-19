@@ -1,0 +1,58 @@
+# Portable same-host Linux deployment preparation
+
+Current host is macOS; no VPS exists or is deployed. These examples prepare future Linux provisioning only. Production-mode local rehearsal is separate from public deployment; no installation, enable/start, DNS, or certificate issuance is authorized here.
+
+**Linux native syntax verified in isolated Debian containers; deployment NOT VERIFIED.** Caddy 2.6.2 and API/web systemd 252 native validation executed with networking disabled. OTP follow-up native parser passed with explicit SAMPLE executable stand-ins after recording missing Linux paths; disposable tooling installation used outbound network only, no published ports or product DB access; evidence: `.release-evidence/blocker-linux.log`. Disposable tool installation stayed inside Docker; no host installation. No production services, certificates, or public listeners started. Parser success does not verify service startup, paths/accounts/env files, cgroup enforcement, resource sizing, HTTPS, or staging UAT. Scope: existing loopback constraint in `apps/api/src/main.ts`, passenger same-origin contract, and implementation playbook §§18/23; no authentication/network architecture change.
+
+## Approval and replacement requirements
+
+1. Obtain Product Owner approval for staging host/access policy, DNS/TLS issuance, pinned commit/artifact checksums, operator, capacity, and rollback window before installing or starting anything. Public exposure remains separately gated: prototype passenger sessions are not production authentication. These examples do not supply rate/concurrency admission controls; approve and verify those controls before exposure.
+2. Replace `/srv/transum-in/current`, `/usr/bin/node`, users/groups, and domain with reviewed host values. Use pinned Node `22.23.2` and pnpm `11.25.0`; deploy prebuilt web/API artifacts with installed locked dependencies. No builds in service startup. Existing root runbook covers build/DB maintenance; no migration runs here. Release must not be writable by service users. Precreate `.next/cache`, writable only by web user; validate any additional runtime write needs rather than broadening checkout permissions.
+3. Create separate non-login `transum-api` / `transum-web` accounts. Supply root-owned `0600` files `/etc/transum-in/api.env` and `/etc/transum-in/web.env` outside checkout. systemd reads them before dropping privileges. Use systemd `KEY=value` syntax, no shell commands/expansion, no committed secrets. Never pass secrets in command-line arguments or logs.
+   - API: private runtime `DATABASE_URL`, `PASSENGER_SERVICE_TOKEN`, `PASSENGER_NETWORK_SNAPSHOT_ID`, private `OTP_URL`; approved provider configuration only if needed.
+   - Web: `PASSENGER_API_BASE_URL=http://127.0.0.1:3001/api/v1`, matching `PASSENGER_SERVICE_TOKEN`, random `PASSENGER_SESSION_SECRET` (at least 32 characters), matching `PASSENGER_NETWORK_SNAPSHOT_ID`. No DB credentials.
+   - Both: `NODE_ENV=production`, `APP_ENV=production`, `CONTROLLED_REVIEW_ENABLED=false`; omit review secrets. API must retain `API_HOST=127.0.0.1`, `API_PORT=3001`. Review env files for conflicting assignments; no root `.env` is loaded by these units.
+4. Review example per-service ceilings: one CPU, 768 MiB memory pressure threshold, 1 GiB hard memory limit, 128 tasks, 4096 open files. These are conservative examples, not measured capacity or readiness evidence. Include DB, OS, Caddy, and optional OTP heap/native memory in host budget. Measure load/SSE behavior before approval; hitting limits can terminate service. Configure bounded journald retention separately; per-unit log rate limits do not cap disk retention.
+
+## Local production rehearsal
+
+On macOS with Docker, Node/pnpm, production builds, the existing PostGIS image, and the existing OTP instance already running, execute the owned scratch rehearsal:
+
+```sh
+infra/deployment/rehearse-local.sh
+```
+
+The script records output under ignored `.release-evidence/`, pipes output through `tee` while preserving the runner exit status, and emits no secret values. Runner reads no `.env`, allocates its own UUID-labeled PostGIS container on a random loopback-only port, and applies migrations/permission/outage faults only to that owned scratch database. It starts production-mode API and web on temporary loopback ports, probes existing OTP with `__typename`, checks DB/PostGIS readiness and web HTML, tests readiness failure and recovery after scratch DB access is revoked, verifies a scratch backup/restore, exercises local self-signed HTTPS, restarts API, then removes owned container and temporary files on success. On failure it retains owned container/temp directory for local inspection; verify ownership marker before cleanup. Do not use `docker compose down`, broad name-based cleanup, or product-service commands as rehearsal cleanup.
+
+This exercises app-level recovery behavior, not Linux systemd/Caddy service supervision. It does not simulate OTP restart/outage, product-data restoration, public HTTPS, alert scheduling/delivery, or historical passenger routing. Existing web production build and OTP must already be available. Rehearsal compiles current API working-tree source into an invocation-owned temporary sibling of `dist` (preserving relative manifest paths), selects it via `REHEARSAL_API_ENTRYPOINT`, then removes that output on exit. It never writes `dist` or runs a Next build; existing `.next` freshness is not established by this check. No existing runtime is restarted or stopped. No ports are published beyond 127.0.0.1.
+
+## Reproduce validation, then approved rollout
+
+On target Linux host with approved, existing Caddy/systemd tooling, run **validation only first** (no TLS issuance or listener starts):
+
+```sh
+STAGING_DOMAIN=staging.example.invalid infra/deployment/validate.sh
+node infra/deployment/health-check.test.mjs
+# After staging services exist, provide non-secret origins and run:
+API_BASE_URL=http://127.0.0.1:3001 WEB_BASE_URL=http://127.0.0.1:3000 OTP_URL=http://127.0.0.1:8080/otp/gtfs/v1 node infra/deployment/health-check.mjs
+```
+
+`validate.sh` rejects missing/malformed hostnames before invoking parsers. Caddyfile also falls back to reserved `missing-staging-domain.invalid`, avoiding an empty-host catch-all when validation is bypassed. Always use wrapper; do not treat fallback as deployment configuration. `health-check.mjs` uses Node's native fetch, five-second per-probe timeout, no redirects, and no response-body/URL logging. It checks API liveness, DB/PostGIS readiness, web HTML, and OTP GraphQL reachability; nonzero exit means failed probe/configuration. Provide OTP's actual GraphQL endpoint path. It does not create an alert scheduler, verify passenger routing, or prove data freshness. Test servers are explicitly SAMPLE and use random loopback ports. Never put secrets in probe URLs.
+
+Replace validation domain with approved DNS hostname for rollout. Export `STAGING_DOMAIN` into Caddy service environment (not web/API env files); missing value must block deployment. Use separately managed unprivileged Caddy service with HTTPS bind capability and protected persistent certificate storage. Config matches only that hostname; Caddy default HTTP-to-HTTPS redirect uses port 80. Expose only approved proxy ports, never 3000/3001/5432/5433/8080. Preserve Host and trusted forwarded headers; no upstream proxy assumed. If adding one, separately review trusted proxy configuration.
+
+After approval, operator installs reviewed units and Caddyfile using host change procedure, runs `systemctl daemon-reload`, then starts API, web, and Caddy in order. `After` is ordering, not readiness. Verify loopback listeners, API `/health/live` and `/health/ready`, HTTPS `/`, `/api/passenger/journeys/planning-health`, Secure session cookies, rejected foreign origins, and an owner-scoped SSE connection/reconnect through HTTPS. Use `curl -N` with operator-approved session cookie storage, never secret values in shell history. Confirm event delivery without buffering, heartbeat continuity, Last-Event-ID replay, and owner isolation. Caddy immediate flush plus no stream read timeout preserves SSE; response-header timeout covers initial headers only. DB readiness alone does not prove OTP, TLS, or passenger readiness. Record evidence; until then Linux deployment remains **NOT VERIFIED**.
+
+For rollback, stop affected services, restore approved prior immutable artifact/config, restart, and repeat health/HTTPS/SSE checks. Do not roll back compromised secrets or run DB rollback without separate approval. Secret rotation can invalidate passenger sessions and requires coordinated web/API restart.
+
+## Optional Linux OTP example, no graph rebuild
+
+`transum-otp.service` is preparation only, never enabled/started here. Provision reviewed architecture-compatible **Linux Java 25** at `/opt/transum-in/java25/bin/java`, pinned OTP 2.10.0 jar at `/opt/transum-in/otp/otp-shaded-2.10.0.jar`, separate non-login `transum-otp` account, and executable `otp-prestart.sh` under immutable release. No macOS runtime reuse. No downloads, graph rebuilds, `otp:preflight`, or `otp:start`.
+
+Provision existing compatible `graph.obj` plus minimal `router-config.json` containing `{}` under `/srv/transum-in/otp`, owned by deployment administrator and read-only to service user. Review retained graph-build/input manifests, graph serialization compatibility, snapshot ID, licenses/access, and Java/OTP versions before any transfer; restricted research graph is not approved for redistribution. Provision root-owned, non-service-writable `/etc/transum-in/otp-graph.sha256`: exactly one `sha256sum` line (`<64 lowercase hex>  graph.obj`), with digest taken from approved retained graph-build/release evidence. Current router-input manifest describes inputs, not graph checksum; absent approved graph digest blocks start. Never generate trusted expected checksum from deployment target during startup.
+
+`ExecStartPre` fails closed on absent Java, wrong Java major, pinned jar checksum mismatch, missing/malformed graph checksum, graph mismatch, or nonempty router config. Jar digest matches `scripts/routing/otp-phase4ba.sh`. Service filesystem protection keeps graph/config read-only. Keep paths/ancestors and approved manifest immutable to service account, preventing check/use replacement. Default 5 GiB heap/7 GiB hard ceiling are unmeasured examples, not VPS capacity advice; review all services and native memory together. Review OTP logs for request/location privacy and bounded journald retention; no secrets supplied to this unit.
+
+**Binding evidence:** OTP v2.10.0 `ServerConfig.java` and existing jar contain no `server.bindAddress` router key. `CommandLineParameters.java` and jar confirm **`--bindAddress 127.0.0.1 --port 8080`**; default is unsafe `0.0.0.0`. Unit uses explicit CLI plus `--abortOnUnknownConfig`; do not add guessed router keys. Source: `https://github.com/opentripplanner/OpenTripPlanner/blob/v2.10.0/application/src/main/java/org/opentripplanner/standalone/config/CommandLineParameters.java`. Before real serving, verify loopback listener and host firewall denies external OTP access. If pinned runtime cannot honor explicit loopback binding, stop; require separately reviewed firewall/network plan, never fall back to wildcard bind. Health URL: `http://127.0.0.1:8080/otp/gtfs/v1`.
+
+Linux OTP startup, graph loading, resource sufficiency, and real routing remain **NOT VERIFIED**. Native parser results in evidence distinguish unit syntax from missing deployment executables/paths. If OTP unavailable, report routing degraded/unavailable, not ready.

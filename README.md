@@ -93,23 +93,141 @@ For the passenger MVP, start the verified local OTP graph (`pnpm otp:preflight`,
 
 Root commands:
 
-| Command                  | Purpose                                                    |
-| ------------------------ | ---------------------------------------------------------- |
-| `pnpm dev`               | Run the web and API development processes                  |
-| `pnpm db:up`             | Build and start the project PostgreSQL/PostGIS service     |
-| `pnpm db:down`           | Stop services while preserving the database volume         |
-| `pnpm db:migrate`        | Apply pending version-controlled migrations                |
-| `pnpm db:status`         | Report applied and pending migrations without secrets      |
-| `pnpm db:reset`          | Delete only the local project DB volume, recreate, migrate |
-| `pnpm lint`              | Lint active TypeScript sources                             |
-| `pnpm typecheck`         | Typecheck all active workspace packages                    |
-| `pnpm test`              | Run the API foundation unit test                           |
-| `pnpm check:integration` | Run database, PostGIS, migration, and readiness tests      |
-| `pnpm openapi:validate`  | Semantically validate the canonical OpenAPI document       |
-| `pnpm api:types`         | Regenerate derived OpenAPI TypeScript types                |
-| `pnpm build`             | Build web, API, and shared types                           |
-| `pnpm check`             | Run the complete deterministic local quality gate          |
-| `pnpm format:check`      | Verify formatting without modifying files                  |
+| Command                                                    | Purpose                                                                                                                                                                      |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm dev`                                                 | Run the web and API development processes                                                                                                                                    |
+| `pnpm db:up`                                               | Build and start the project PostgreSQL/PostGIS service                                                                                                                       |
+| `pnpm db:down`                                             | Stop services while preserving the database volume                                                                                                                           |
+| `pnpm db:migrate`                                          | Apply pending version-controlled migrations                                                                                                                                  |
+| `pnpm db:status`                                           | Report applied and pending migrations without secrets                                                                                                                        |
+| `pnpm db:reset`                                            | Delete only the local project DB volume, recreate, migrate                                                                                                                   |
+| `pnpm lint`                                                | Lint active TypeScript sources                                                                                                                                               |
+| `pnpm typecheck`                                           | Typecheck all active workspace packages                                                                                                                                      |
+| `pnpm test`                                                | Run the API foundation unit test                                                                                                                                             |
+| `pnpm check:integration`                                   | Run database, PostGIS, migration, and readiness tests                                                                                                                        |
+| `pnpm openapi:validate`                                    | Semantically validate the canonical OpenAPI document                                                                                                                         |
+| `pnpm api:types`                                           | Regenerate derived OpenAPI TypeScript types                                                                                                                                  |
+| `pnpm build`                                               | Build web, API, and shared types                                                                                                                                             |
+| `pnpm check`                                               | Run the complete deterministic local quality gate                                                                                                                            |
+| `pnpm format:check`                                        | Verify formatting without modifying files                                                                                                                                    |
+| `pnpm --filter @transum-in/api data:full-product-role-e2e` | Full product role E2E (owned scratch, prod Next, HTTPS loopback, SAMPLE accounts, role/session/origin checks) — evidence `.release-evidence/full-product-role-e2e/<run-id>/` |
+
+## Local production deployment preparation (partial verification)
+
+Disposable production-mode rehearsal (requires existing local PostGIS image and production builds):
+
+```sh
+pnpm check
+pnpm --filter @transum-in/api exec tsx src/infrastructure/database/deployment-rehearsal.cli.ts
+```
+
+Runner creates a UUID-labeled container on a random loopback port, never reads `.env`, and never mounts product volumes. Checks 17 migrations, latest migration rollback/reapply, non-SUPERUSER runtime permissions, transaction rollback/commit, PostGIS, indexes/constraints, custom-format backup/restore row parity, production startup, local self-signed HTTPS, and API restart. SAMPLE fixture only: this does not verify recovery of product data or full passenger routing. Successful runs remove only their owned container/volume and temporary files; failures retain owned resources for inspection. Production infrastructure and public TLS remain unverified.
+
+This is a reproducible preparation runbook, not a production approval or publication. Product DB changes, DB role changes, OTP graph publication, and public exposure require separate Product Owner maintenance approval. Do not run controlled acceptance commands against production.
+
+### Runtime shape and prerequisites
+
+```text
+HTTPS reverse proxy
+  -> Next.js web process (loopback, port 3000)
+  -> NestJS API (loopback, port 3001)
+  -> private PostgreSQL/PostGIS
+  -> local/private OTP routing engine (default port 8080)
+```
+
+Use Node `22.23.2`, pnpm `11.25.0`, a pinned source commit, a private PostgreSQL/PostGIS network, and a routing graph built from approved, locally retained inputs. Restricted rail inputs and graph artifacts must remain non-redistributed. Local OTP startup targets arm64 macOS through `scripts/routing/otp-phase4ba.sh`. Linux preparation is in `infra/deployment/transum-otp.service` with explicit loopback bind and checksum prestart checks; it requires provisioned Linux Java/OTP artifacts and target-host runtime validation. The macOS script is not portable.
+
+Required configuration comes from a secret manager or protected process environment, never an image, repository, frontend bundle, or shell history:
+
+- `APP_ENV=production`, `NODE_ENV=production`
+- `API_HOST=127.0.0.1`, `API_PORT=3001`, web port `3000`
+- `DATABASE_URL` or discrete DB fields; DB host remains private
+- `PASSENGER_SESSION_SECRET` with at least 32 random characters
+- `PASSENGER_SERVICE_TOKEN` with least scope needed by the web-to-API proxy
+- `PASSENGER_API_BASE_URL` pointing to private API origin
+- `PASSENGER_NETWORK_SNAPSHOT_ID` matching deployed OTP graph snapshot
+- `OTP_URL` pointing to private OTP
+- `ROUTING_PROVIDER_URL` only when an approved adapter requires it
+- `CONTROLLED_REVIEW_ENABLED=false`; do not set controlled review secrets in production
+
+`PASSENGER_SESSION_SECRET` absence fails passenger proxy requests closed. API `API_HOST` currently rejects non-loopback values because prototype passenger sessions are not production authentication. Therefore place HTTPS termination and public access in a reverse proxy on the same host, or obtain an explicit auth/network architecture approval before changing this constraint.
+
+### Prepare, start, and verify
+
+Run from a clean checkout at approved commit. Supervisor must inject environment before startup: package `start` commands do not load root `.env` through `scripts/dev/with-env.mjs`. Keep any secret file outside release checkout, owner-readable only (`0600`). Run each foreground service in a separate supervisor unit/terminal; build commands below are future operator steps, not evidence executed in this session:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @transum-in/web build
+pnpm --filter @transum-in/api build
+pnpm --filter @transum-in/api db:status
+API_HOST=127.0.0.1 pnpm --filter @transum-in/api start
+pnpm --filter @transum-in/web exec next start --hostname 127.0.0.1 --port 3000
+```
+
+Run migrations only after separate product maintenance approval, backup/recovery confirmation, and least-privilege role review:
+
+```bash
+pnpm db:migrate
+```
+
+Do not run `pnpm db:reset`, acceptance seed/demo commands, or research verification against production. Use a non-root process supervisor with one web and one API process, automatic restart on crash with backoff/restart ceiling, graceful stop, bounded stdout/stderr retention, and explicit CPU, memory, open-file and process-count limits. Set measured limits before rollout rather than inventing capacity numbers; current API pool caps connections at 10 per process. Keep OTP heap plus native-memory headroom within host budget. Configure HTTPS proxy to preserve original `Host`, reject arbitrary hosts, constrain request bodies/rates/concurrency, and disable SSE response buffering/cache with stream-compatible timeouts. Production passenger mutations expect HTTPS origins and production cookies are Secure; plain HTTP is not a valid production smoke test. Keep OTP separately supervised; its current local pattern is:
+
+```bash
+pnpm otp:preflight
+pnpm otp:start
+pnpm otp:health
+```
+
+These are future operator steps only: preflight can download runtime artifacts, and start changes OTP state. Do not run them during read-only preparation. Existing production-restart browser harness is isolated acceptance tooling, not a deployment supervisor. Never point it at product DB.
+
+For OTP graph deployment, verify graph file, snapshot ID, input manifest, checksums, Java/OTP versions, and private bind address before start. Current script uses `-Xmx5G` serving and `-Xmx6G` graph build; do not copy those limits to a smaller host without capacity review.
+
+After every restart or rollout, check only non-secret responses:
+
+```bash
+curl -fsS https://PUBLIC_HOST/
+curl -fsS https://PUBLIC_HOST/api/passenger/journeys/planning-health
+curl -fsS http://127.0.0.1:3001/health/live
+curl -fsS http://127.0.0.1:3001/health/ready
+curl -fsS -H 'Content-Type: application/json' -d '{"query":"{ __typename }"}' "$OTP_URL"
+```
+
+`/health/live` proves API process liveness. `/health/ready` proves PostgreSQL/PostGIS readiness. OTP health proves routing reachability only. Do not treat any of these as proof of HTTPS, auth, data freshness, or production correctness. Monitor status, restart count, response latency/error rate, DB connections/storage, OTP memory/CPU, disk, and logs. Redact passwords, tokens, cookies, precise locations, and full sensitive copilot context; preserve correlation/request IDs where implementation provides them.
+
+### Secret rotation
+
+1. Create replacement secret in secret manager; never print it or place it in a command argument.
+2. Confirm old and new values have distinct versions and access policy; record owner, timestamp, scope, and expiry without recording secret value.
+3. Deploy new environment to one non-public instance or approved maintenance window.
+4. Restart affected web/API processes gracefully; existing sessions may expire because cookie signatures use `PASSENGER_SESSION_SECRET`.
+5. Check liveness, readiness, passenger proxy response, logs, and error rate without logging headers or cookies.
+6. Revoke old secret only after verification and rollback window; remove old value from supervisor/container environment and secret-manager versions per retention policy.
+7. If compromise suspected, revoke immediately, invalidate sessions, inspect access logs, and preserve incident evidence.
+
+Current passenger signing and service-token checks accept one configured secret, not a key ring. Service-token changes therefore require a coordinated web/API maintenance restart; there is no zero-downtime dual-token overlap. Signing-secret rotation invalidates existing cookies; invalid cookies receive `403` until cleared, and old owner-scoped journeys may become inaccessible. Obtain explicit approval for that identity impact before rotation. Never restore a compromised secret during rollback.
+
+Rotate `DATABASE_URL` credentials only under separately approved DB maintenance, with old/new credential overlap managed by an authorized DB operator. This runbook does not authorize role creation or password changes. Never rotate by editing committed files, `.env.example`, image layers, or shell history. A leaked secret requires rotation, not deletion from repository alone.
+
+### Least privilege (pending separate maintenance approval)
+
+Separate non-login object ownership, controlled migration identity, and runtime login. Runtime needs only reviewed schema usage, table reads/writes and sequence use for actual product flows; no superuser, role/database creation, schema DDL, ingestion, or blanket future grants. Keep web without DB credentials; API alone receives runtime credentials. Inspect SQL-backed code, extensions, existing grants and default privileges before deriving exact grants. Rehearse on an isolated DB with positive product flows and negative DDL/role tests; do not infer least privilege from readiness alone. Rollout exact reviewed grants only in approved maintenance window; preserve old grants/credential mapping for authorized rollback without granting admin rights to runtime. No role SQL is executed or prescribed here.
+
+### Rollout and rollback
+
+Rollout requires: approved commit and artifact digest, clean build evidence, dependency/security scan, backup before any approved migration, graph manifest/checksums, HTTPS certificate plan, supervisor resource limits, and named operator. Use old process as known-good until new web/API health checks pass. Shift traffic only after HTTPS, liveness, readiness, OTP reachability, and smoke route checks pass.
+
+Rollback means stop new processes, restore previous known-good artifact/commit and environment version, restart, then repeat health checks. Do not roll back application code across an incompatible schema change. Restore DB only through approved backup/recovery procedure. No DB migration or role rollout is authorized by this runbook.
+
+### Current production gaps
+
+- Production authentication and operator authorization are unresolved; prototype passenger cookies are not a production identity system.
+- Linux proxy/supervisor examples and executable monitoring probes exist in `infra/deployment/`; native syntax is verified, but target-host startup, public TLS, alert delivery, resource sizing and log-retention policy remain unverified.
+- API currently enforces loopback-only `API_HOST`; public deployment needs same-host HTTPS proxy or approved architecture change.
+- `/health/ready` covers DB/PostGIS, not OTP, web, certificate, or dataset freshness.
+- Linux OTP unit is preparation-only: provisioned Java/OTP, checksum-approved graph, memory budget and real Linux startup remain unverified; controlled rail-source access/redistribution restrictions remain.
+- Least-privilege DB runtime/migration roles and maintenance approval remain pending.
+- Disposable rehearsal verifies production builds/startup, local self-signed HTTPS, API restart, DB outage recovery, live API/Web/PostGIS/OTP probes, latest empty-schema migration rollback/reapply, and SAMPLE backup/restore. Exact-grants full passenger acceptance and populated journey-data restore remain pending evidence. Public TLS, alert delivery, secret rotation, and product-data rollback/restore remain NOT VERIFIED.
 
 ## Phase lifecycle
 

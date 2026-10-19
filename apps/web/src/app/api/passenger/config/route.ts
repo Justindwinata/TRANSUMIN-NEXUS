@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
 
 export function GET() {
@@ -8,12 +9,17 @@ export function GET() {
         error: {
           code: 'DATASET_NOT_READY',
           message: 'Passenger routing snapshot is not configured.',
+          request_id: randomUUID(),
         },
       },
       { status: 503 },
     );
   }
-  return NextResponse.json({
-    data: { network_snapshot_id: networkSnapshotId },
-  });
+  return NextResponse.json(
+    {
+      data: { network_snapshot_id: networkSnapshotId },
+      meta: { request_id: randomUUID(), warnings: [] },
+    },
+    { headers: { 'cache-control': 'no-store' } },
+  );
 }

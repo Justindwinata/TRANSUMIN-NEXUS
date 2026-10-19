@@ -6,13 +6,19 @@ import {
   Controller,
   Get,
   Headers,
+  HttpException,
   Inject,
   Param,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
-import { PassengerReportService } from './passenger-report.service.js';
+import type { ServerResponse } from 'node:http';
+import {
+  PassengerReportRateLimitException,
+  PassengerReportService,
+} from './passenger-report.service.js';
 import { ControlledReviewGuard } from './controlled-review.guard.js';
 import { PassengerServiceGuard } from '../journey/interface/passenger-service.guard.js';
 
@@ -37,6 +43,7 @@ export class PassengerReportController {
       entity_type?: unknown;
       description?: unknown;
     },
+    @Res({ passthrough: true }) response: ServerResponse,
   ) {
     if (typeof ownerRef !== 'string' || typeof key !== 'string')
       throw new BadRequestException('Owner and Idempotency-Key are required.');
@@ -50,30 +57,55 @@ export class PassengerReportController {
         throw new BadRequestException(`${field} must be a string.`);
       return value;
     };
-    return envelope(
-      await this.reports.submit({
-        ownerRef,
-        key,
-        journeyId: text(body.active_journey_id, 'active_journey_id', true),
-        category: text(body.category, 'category')!,
-        observedAt: text(body.observed_at, 'observed_at')!,
-        entityId: text(body.mobility_entity_id, 'mobility_entity_id')!,
-        entityType: text(body.entity_type, 'entity_type')!,
-        description: text(body.description, 'description')!,
-      }),
-    );
+    try {
+      return envelope(
+        await this.reports.submit({
+          ownerRef,
+          key,
+          journeyId: text(body.active_journey_id, 'active_journey_id', true),
+          category: text(body.category, 'category')!,
+          observedAt: text(body.observed_at, 'observed_at')!,
+          entityId: text(body.mobility_entity_id, 'mobility_entity_id')!,
+          entityType: text(body.entity_type, 'entity_type')!,
+          description: text(body.description, 'description')!,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof PassengerReportRateLimitException) {
+        response.setHeader('Retry-After', String(error.retryAfterSeconds));
+        throw new HttpException(
+          {
+            error: {
+              code: 'RATE_LIMITED',
+              message: error.message,
+              request_id: randomUUID(),
+              details: { retry_after_seconds: error.retryAfterSeconds },
+            },
+          },
+          429,
+        );
+      }
+      throw error;
+    }
   }
 
   @Get('passenger-reports')
   @UseGuards(PassengerServiceGuard)
   async list(
     @Query('active_journey_id') journeyId: string | undefined,
+    @Query('idempotency_key') key: string | undefined,
     @Headers('x-journey-owner') ownerRef: string | undefined,
   ) {
-    if (typeof ownerRef !== 'string' || typeof journeyId !== 'string')
+    if (typeof ownerRef !== 'string')
+      throw new BadRequestException('Owner is required.');
+    if ((typeof key === 'string') === (typeof journeyId === 'string'))
       throw new BadRequestException(
-        'Owner and active_journey_id are required.',
+        'Supply exactly one of active_journey_id or idempotency_key.',
       );
+    if (typeof key === 'string')
+      return envelope(await this.reports.lookupByIdempotencyKey(ownerRef, key));
+    if (typeof journeyId !== 'string')
+      throw new BadRequestException('active_journey_id is required.');
     return envelope(await this.reports.list(ownerRef, journeyId));
   }
 

@@ -7,10 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const requireApi = createRequire(
-  join(
-    dirname(fileURLToPath(import.meta.url)),
-    '../../api/package.json',
-  ),
+  join(dirname(fileURLToPath(import.meta.url)), '../../api/package.json'),
 );
 const { Pool } = requireApi('pg');
 
@@ -308,7 +305,10 @@ async function assertMapExperience(page, journey) {
   await canvas.waitFor({ timeout: 15_000 });
   assert.ok((await canvas.count()) > 0, 'MapLibre canvas missing.');
   assert.ok(
-    (await page.getByText('© OpenStreetMap contributors').count()) > 0,
+    (await page
+      .getByRole('figure', { name: 'Interactive route geometry:' })
+      .getByRole('link', { name: '© OpenStreetMap contributors' })
+      .count()) > 0,
     'Map attribution missing.',
   );
   assert.ok(

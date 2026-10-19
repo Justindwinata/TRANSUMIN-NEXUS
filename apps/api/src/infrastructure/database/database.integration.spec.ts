@@ -121,6 +121,44 @@ describe('PostgreSQL/PostGIS foundation', () => {
     );
   });
 
+  it('enforces the unvalidated hazard-evidence check on new writes and validates it cleanly', async () => {
+    const constraintBefore = await sql<{ validated: boolean }>`
+      select convalidated as validated from pg_constraint
+      where conrelid='disruption.event'::regclass
+        and conname='disruption_event_hazard_evidence_check'
+    `.execute(database);
+    assert.deepEqual(constraintBefore.rows, [{ validated: false }]);
+
+    await assert.rejects(
+      sql`
+        insert into disruption.event (
+          id, incident_type, source_id, evidence_type, operational_state,
+          effective_from, effective_to, received_at, geometry, reason,
+          provenance_ref, raw_reference, dedupe_key
+        ) values (
+          '70000000-0000-4000-8000-000000000001'::uuid, 'FLOOD',
+          '70000000-0000-4000-8000-000000000002'::uuid, 'OBSERVED', 'UNKNOWN',
+          '2026-10-01T00:00:00Z', '2026-10-01T01:00:00Z',
+          '2026-10-01T00:01:00Z', ST_SetSRID(ST_MakePoint(106.8456, -6.2088), 4326),
+          'Invalid flood evidence fixture.', 'fixture:hazard-check',
+          'fixture:hazard-check', ${'7'.repeat(64)}
+        )
+      `.execute(database),
+      /disruption_event_hazard_evidence_check/,
+    );
+
+    await sql`
+      alter table disruption.event
+      validate constraint disruption_event_hazard_evidence_check
+    `.execute(database);
+    const constraintAfter = await sql<{ validated: boolean }>`
+      select convalidated as validated from pg_constraint
+      where conrelid='disruption.event'::regclass
+        and conname='disruption_event_hazard_evidence_check'
+    `.execute(database);
+    assert.deepEqual(constraintAfter.rows, [{ validated: true }]);
+  });
+
   it('serves independent liveness and database-backed readiness endpoints', async () => {
     const app = await NestFactory.create(AppModule, { logger: false });
     configureApplication(app);
